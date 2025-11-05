@@ -5,6 +5,7 @@ Data transformation functions
 from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, List, Dict, Any, Tuple
 
+from matplotlib import ticker
 import pandas as pd
 import numpy as np
 
@@ -64,14 +65,46 @@ class Transformer:
         if "ask_price" in data.columns:
             data = data[data["ask_price"] > 0.01]
         return data
+
+    @staticmethod
+    def compute_rv(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Computes realized volatility from historical prices"""
+        import yfinance as yf
+        tick = kwargs.get("tick", "")
+        period = kwargs.get("period", 60)
+        
+        trade_dates = pd.to_datetime(data['trade_date'])
+        start_date = trade_dates.min() - pd.Timedelta(days=60)
+
+        stock = yf.Ticker(tick)
+        hist = stock.history(start=start_date)
+        
+        hist['log_return'] = np.log(hist['Close'] / hist['Close'].shift(1))
+        hist['rv'] = hist['log_return'].rolling(window=period).std() * np.sqrt(252)
+        hist.index = pd.to_datetime(hist.index)
+        rv_series = hist['rv'].reindex(trade_dates).reset_index(drop=True)
+        data['realized_volatility'] = rv_series.values
+        
+        return data
     
+
     @staticmethod
     def scale_by_splits(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Scales option prices for stock splits"""
         splits = kwargs.get("splits", {})
+        if splits is None or len(splits) == 0:
+            import yfinance as yf
+            try:
+                ticker = kwargs.get("tick", "")
+                stock = yf.Ticker(ticker)
+                splits = stock.splits.to_dict()
+                splits = dict(sorted(splits.items()))
+            except Exception as e:
+                return data
+
         for date, ratio in splits.items():
             data.loc[
-                pd.to_datetime(data['trade_date']) < pd.Timestamp(date),
+                pd.to_datetime(data['trade_date']).dt.tz_localize('America/New_York') < pd.to_datetime(date),
                 ['strike', 'bid_price', 'ask_price', 'last_trade_price']
             ] /= ratio
         return data
@@ -126,70 +159,70 @@ class Transformer:
             return np.nan
         return series.mean()
 
-    
+    @staticmethod
+    def pull_earnings_dates(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """
+        Fast version: adds 'last_earnings' and 'next_earnings' columns for each trade_date.
+        Uses vectorized numpy search instead of merge_asof.
+        """
+        import yfinance as yf
+
+        tick = kwargs.get("tick", "")
+        if not tick:
+            raise ValueError("You must provide a 'tick' argument (e.g., tick='AAPL').")
+
+        # --- Fetch and prepare earnings data ---
+        ticker = yf.Ticker(tick)
+        earnings_dates = ticker.get_earnings_dates(limit=100).reset_index()
+        earnings_dates = pd.to_datetime(earnings_dates["Earnings Date"]).sort_values().to_numpy()
+
+        # --- Prepare trade dates ---
+        trade_dates = pd.to_datetime(data["trade_date"]).to_numpy()
+
+        # --- Find next and last earnings using searchsorted (O(n log m)) ---
+        idx_next = np.searchsorted(earnings_dates, trade_dates, side="left")
+        idx_last = idx_next - 1
+
+        next_earnings = np.where(
+            idx_next < len(earnings_dates),
+            earnings_dates[idx_next],
+            pd.NaT
+        )
+        last_earnings = np.where(
+            idx_last >= 0,
+            earnings_dates[idx_last],
+            pd.NaT
+        )
+
+        # --- Attach results back to the DataFrame ---
+        result = data.copy()
+        result["next_earnings"] = next_earnings
+        result["last_earnings"] = last_earnings
+
+        return result
+
     @staticmethod
     def safe_sum(series: pd.Series) -> float:
         """Compute sum, return NaN if all values are NaN."""
         if series.dropna().empty:
             return np.nan
         return series.sum()
-
+    
     @staticmethod
-    def prepare_data(outputs: pd.DataFrame, data: pd.DataFrame, **kwargs: Dict[str, Any]) -> pd.DataFrame:
-        """Prepares data by computing specified features and target variables."""
-        features: List[Tuple[str, Dict[str, Any]]] = kwargs.get('features', [])
-        target: Tuple[str, Dict[str, Any]] | None = kwargs.get('target', None)
-        outputs['trade_date'] = data.loc[data.index, 'trade_date']
-        filters: Dict[str, Tuple[Any, ...]] = kwargs.get('filters', {})
-        shifts : Dict[str, int] = kwargs.get('shifts', {})
-
-        # Map aggregation names to functions
-        agg_map = {
-            'mean': Transformer.safe_mean,
-            'sum': Transformer.safe_sum
-        }
-
-        agg_dict = {}
-        for feature_name, feature_kwargs in features:
-            if feature_name not in outputs.columns:
-                raise ValueError(f"Feature '{feature_name}' not found in outputs.")
-            how = feature_kwargs.get('how', 'mean')
-            if how not in agg_map:
-                raise ValueError(f"Aggregation '{how}' not supported.")
-            agg_dict[feature_name] = agg_map[how]
-
-        if target is not None:
-            target_name, target_kwargs = target
-            if target_name not in outputs.columns:
-                raise ValueError(f"Target '{target_name}' not found in outputs.")
-            how = target_kwargs.get('how', 'mean')
-            if how not in agg_map:
-                raise ValueError(f"Aggregation '{how}' not supported.")
-            agg_dict[target_name] = agg_map[how]
-
-        # Group by trade_date and apply safe aggregations
-        if shifts:
-            for feature_name, shift in shifts.items():
-                if feature_name not in outputs.columns:
-                    raise ValueError(f"Feature '{feature_name}' not found in outputs.")
-                outputs[feature_name] = outputs.groupby('trade_date')[feature_name].shift(shift)
-
-
-        outputs = outputs.groupby('trade_date').agg(agg_dict).reset_index()
-
-        if filters:
-            mask = pd.Series(False, index=outputs.index)
-            for feature_name, filter_tuple in filters.items():
-                if feature_name not in outputs.columns and feature_name not in data.columns:
-                    raise ValueError(f"Feature '{feature_name}' not found in data columns.")
-                
-                for condition in filter_tuple:
-                    if condition == 'null':
-                        mask |= outputs[feature_name].isna()
-                    else:
-                        mask |= outputs[feature_name] == condition
-
-            # Keep only rows NOT masked
-            outputs = outputs[~mask].copy()
-
-        return outputs
+    def to_datetime(data: pd.DataFrame, columns: List[str], **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Converts specified columns to datetime format."""
+        tz = kwargs.get('tz', 'America/New_York')
+        for col in columns:
+            data[col] = pd.to_datetime(data[col]).dt.tz_localize(tz)
+        return data
+    
+    @staticmethod
+    def set_index(data: pd.DataFrame, index_cols: List[str], **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Sets the DataFrame index to the specified columns."""
+        drop = kwargs.get('drop', False)  # default: keep index columns
+        dedupe = kwargs.get('dedupe', False)
+        if dedupe:
+            data = data.drop_duplicates(subset=index_cols, keep='first')
+        data = data.set_index(index_cols, drop=drop)
+        data.index.names = [f"{i}_idx" for i in index_cols]
+        return data

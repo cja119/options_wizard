@@ -5,7 +5,9 @@ Data manager class, to access data via SQL
 from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor
 from typing import TYPE_CHECKING, Optional
-from pathlib import Path
+from pathlib import Path; import os
+from dotenv import load_dotenv
+import copy
 
 import pandas as pd
 import json
@@ -15,27 +17,44 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 if TYPE_CHECKING:
     from src.universe import Universe
 
+def make_hashable(obj):
+    if isinstance(obj, (list, tuple)):
+        return tuple(make_hashable(i) for i in obj)
+    elif isinstance(obj, dict):
+        return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
+    elif isinstance(obj, set):
+        return tuple(sorted(make_hashable(i) for i in obj))
+    else:
+        return obj
+    
 def _run_pipeline_for_tick(tick, methods, data_loader):
-    data = data_loader(tick, return_data=True)
-    outputs = pd.DataFrame(index=data.index)
-    model_params = {}
-    for kwargs, method in methods:
-        kwargs['tick'] = tick
-        if method.__name__ == 'prepare_data':
-            outputs = method(outputs, data, **kwargs)
-        else:
-            if kwargs.get('_source') == 'Transformer':
-                result = method(data, **kwargs)
-                data = result
-            if kwargs.get('_source') == 'Features':
-                result = method(data, **kwargs)
-                outputs = pd.concat([outputs, result], axis=1)
-            if kwargs.get('_source') == 'Model':
-                name, params, result = method(outputs, **kwargs)
-                model_params[name] = params
-                outputs = pd.concat([outputs, result], axis=1)
-            del result
-    return tick, outputs, data, model_params
+    try:
+        data = data_loader(tick, return_data=True)
+        first = True
+        model_params = {}
+        for kwargs, method in methods:
+            kwargs['tick'] = tick
+            if  hasattr(method, '_is_dataprep'):
+                outputs = method(outputs, **kwargs)
+            else:
+                if kwargs.get('_source') == 'Transformer':
+                    result = method(data, **kwargs)
+                    data = result
+                if kwargs.get('_source') == 'Features':
+                    result = method(data, **kwargs)
+                    if first:
+                        outputs = result
+                        first = False
+                    else:
+                        outputs = pd.concat([outputs, result], axis=1)
+                if kwargs.get('_source') == 'Model':
+                    name, params, result = method(outputs, **kwargs)
+                    model_params[name] = params
+                    outputs = pd.concat([outputs, result], axis=1)
+                del result
+        return tick, outputs, data, model_params
+    except Exception as e:
+        return tick, pd.DataFrame(), e, {}
 
 def _run_single_method(tick, method, kwargs, data_dict, outputs_dict):
     """Run a single method for one tick and return updated data/output."""
@@ -72,6 +91,7 @@ class DataManager:
         self.data: dict[str, pd.DataFrame] = {}
         self.outputs: dict[str, pd.DataFrame] = {}
         self.model_params: dict[str, dict] = {}
+        self.combined_outputs: dict[str, pd.DataFrame] = {}
 
         if not self.load_lazy:
             self._load_data()
@@ -80,24 +100,20 @@ class DataManager:
 
     def _load_data(self, ticks: list[str] | str | None = None, return_data: bool = False) -> pd.DataFrame:
         """Loads all data into memory"""
-        # Apply date filters from universe
-        if ticks is None:
-            ticks = self.universe.ticks
-        if isinstance(ticks, str):
-            ticks = [ticks]
-        for tick in ticks:
-            # Load filenames from tmp directory or database
-            files_in_tmp = Path("./tmp/pkl").glob(f"{tick}_*.pkl")
-            for file in files_in_tmp:
-                if tick in file.name:
-                    tick_data = pd.read_pickle(file)  # Example data loading
-                    tick_data = tick_data.loc[:, ~tick_data.columns.duplicated()]
-            
-            if return_data:
-                return tick_data
-            else:
-                self.data[tick] = tick_data
+        load_dotenv()
 
+        if ticks is None: ticks = self.universe.ticks
+        if isinstance(ticks, str): ticks = [ticks]
+
+        tick_path = os.getenv("TICK_PATH", "")
+
+        for tick in ticks:
+            tick_file = tick_path + f"/{tick}.parquet"
+            data = pd.read_parquet(tick_file)
+            if return_data:        
+                return data.loc[:, ~data.columns.duplicated()]
+            else:
+                self.data[tick] = data.loc[:, ~data.columns.duplicated()]
         return None
 
     def __getitem__(self, ticks: list[str] | str):
@@ -167,21 +183,95 @@ class DataManager:
             del result
         return df
 
-    def execute_pipeline(self, retain_data: bool = False, save_data: bool = False) -> None:
+    def execute_pipeline(self, retain_data: bool = False, save_data: bool = False, n_workers: int = 8) -> None:
         """Executes all stored methods in the pipeline"""
-        with ProcessPoolExecutor() as executor:
+        failed = []
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            posts = {}
+            for tick, methods in self._method_pipeline.items():
+                for kwargs, method in  methods.copy():
+                    if kwargs.get('all_stocks', False):
+                        print(f"\rDeferring method {method.__name__} for all stocks", end='', flush=True)
+                        methods.remove((kwargs, method))
+                        key = (make_hashable(kwargs), method)
+                        if key in posts:
+                            posts[key].append(tick)
+                        else:
+                            posts[key] = [tick]
+
             futures = {
-                executor.submit(_run_pipeline_for_tick, tick, methods, self._load_data): tick
-                for tick, methods in self._method_pipeline.items()
+                executor.submit(_run_pipeline_for_tick, tick, methods.copy(), copy.deepcopy(self._load_data)): tick
+                for tick, methods in self._method_pipeline.items() 
             }
             for f in as_completed(futures):
                 tick, output, data, model_params = f.result()
-                self.outputs[tick] = output
-                self.model_params[tick] = model_params
-                if retain_data:
-                    self.data[tick] = data
-                if save_data:
-                    self.save_parquet(tick=tick, data=save_data)
+                if output.empty:
+                    print(f"Analysis crashed for {tick}, reattempting, reason: {data}")
+                    failed.append(tick)
+                else:
+                    self.outputs[tick] = output
+                    self.model_params[tick] = model_params
+                    if retain_data:
+                        self.data[tick] = data
+                    if save_data:
+                        self.save_parquet(tick=tick, data=save_data)
+
+        with ProcessPoolExecutor(max_workers=n_workers//2) as executor:
+            futures = {
+                executor.submit(_run_pipeline_for_tick, tick, methods, self._load_data): tick
+                for tick, methods in self._method_pipeline.items() if tick in failed
+            }
+            for f in as_completed(futures):
+                tick, output, data, model_params = f.result()
+                if output.empty:
+                    print(f"Analysis crashed twice for {tick}, removing from Universe. Reason {data}")
+                    self.universe.ticks.remove(tick)
+                else:
+                    self.outputs[tick] = output
+                    self.model_params[tick] = model_params
+                    if retain_data:
+                        self.data[tick] = data
+                    if save_data:
+                        self.save_parquet(tick=tick, data=save_data)
+
+        for (kwargs_items, method), ticks in posts.items():
+            kwargs = dict(kwargs_items)
+            for tick in ticks:
+                if tick not in self.universe.ticks:
+                    ticks.remove(tick)
+            for key, value in kwargs.items():
+                if isinstance(value, tuple):
+                    kwargs[key] = list(value)
+            print(f"Running post-processing method {method.__name__} for ticks {ticks}")
+            print(kwargs)
+            self.run_method_combined(ticks, method, kwargs)
+
+        return None
+
+    def run_method_combined(self, ticks, method, kwargs) -> None:
+        """Run a single method for multiple ticks together."""
+        name = ''
+        for tick in ticks:
+            self.outputs[tick]['tick'] = tick
+            name += tick + '_'
+        kwargs['tick'] = name[:-1]
+        input_df = pd.concat([self.outputs[tick] for tick in ticks], axis=0)
+        name, params, preds = method(input_df, **kwargs)
+        output_df = pd.concat([input_df, preds], axis=1)
+        if method.__name__ not in self.combined_outputs:
+            self.combined_outputs[method.__name__] = output_df
+        else:
+            self.combined_outputs[method.__name__] = pd.concat(
+                [self.combined_outputs[method.__name__], output_df], axis=0
+            ).dropna()
+
+        for tick in ticks:
+            tick_df = output_df[output_df['tick'] == tick].drop(columns=['tick'])
+            self.outputs[tick] = tick_df
+            if tick not in self.model_params:
+                self.model_params[tick] = {}
+            self.model_params[tick][name] = params
+
         return None
 
     def save_parquet(self, path: Optional[str] = None, data: Optional[bool] = None,

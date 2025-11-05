@@ -39,12 +39,21 @@ class LinearRegression(BaseModel):
             json.dump(serialisable, f, indent=2)
 
     @staticmethod
-    def fit(outputs, X_cols: list[str], y_col: str) -> dict:
-        """Fit linear regression model."""
+    def fit(outputs, X_cols: list[str], y_col: str, **kwargs) -> dict:
+        """Fit linear regression model, optionally with fixed effects."""
         from sklearn.linear_model import LinearRegression as SklearnLinearRegression
+        import pandas as pd
 
-        X = outputs[X_cols]
+        fixed_effect_col = kwargs.get("fixed_effect_col")  # get from kwargs
+
+        X = outputs[X_cols].copy()
         y = outputs[y_col]
+
+        # Add fixed effects if specified
+        if fixed_effect_col is not None and fixed_effect_col in outputs.columns:
+            # One-hot encode the fixed effect, drop first to avoid multicollinearity
+            dummies = pd.get_dummies(outputs[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
+            X = pd.concat([X, dummies], axis=1)
 
         model = SklearnLinearRegression()
         model.fit(X, y)
@@ -55,6 +64,7 @@ class LinearRegression(BaseModel):
             "intercept_": model.intercept_.tolist()
             if hasattr(model.intercept_, "__len__")
             else model.intercept_,
+            "X_cols": X.columns.tolist()  # save columns for prediction
         }
 
         return params
@@ -62,30 +72,48 @@ class LinearRegression(BaseModel):
     @staticmethod
     def predict(X: pd.DataFrame, **kwargs) -> pd.Series:
         """Predict using linear regression model parameters."""
+        import numpy as np
         params = kwargs.get("model_params")
         if params is None:
             raise ValueError("Model parameters must be provided for prediction.")
 
-        import numpy as np
+        X_cols = kwargs.get("X_cols")  # Columns used for training
+        fixed_effect_col = kwargs.get("fixed_effect_col")
+
+        # Start with original features
+        X_pred = X[X_cols].copy()
+
+        # Add fixed effects if applicable
+        if fixed_effect_col is not None:
+            fe_cols = params.get("fixed_effect_columns")  # stored during fit
+            X_fe = pd.get_dummies(X[fixed_effect_col], drop_first=False)
+
+            # Ensure same order and missing columns are filled with 0
+            for col in fe_cols:
+                if col not in X_fe:
+                    X_fe[col] = 0
+            X_fe = X_fe[fe_cols]  # reorder to match training
+            X_pred = pd.concat([X_pred, X_fe], axis=1)
 
         coef = np.array(params["coef_"])
         intercept = params["intercept_"]
 
-        preds = X.values @ coef + intercept
+        preds = X_pred.values @ coef + intercept
         return pd.Series(preds, index=X.index)
-
+    
     @staticmethod
     def fit_predict(outputs, **kwargs):
         """Fit model, generate predictions, and return pipeline-compatible tuple."""
         name = kwargs.get("name", "linear_regression_prediction")
         X_cols = kwargs.get("X_cols", [])
         y_col = kwargs.get("y_col", "")
+        fixed_effect_col = kwargs.get("diff_ticks", None) 
 
         # Fit model
-        params = LinearRegression.fit(outputs, X_cols, y_col)
+        params = LinearRegression.fit(outputs, X_cols, y_col, fixed_effect_col=fixed_effect_col)
 
         # Predict
-        predictions = LinearRegression.predict(outputs[X_cols], model_params=params)
+        predictions = LinearRegression.predict(outputs, X_cols=X_cols, model_params=params, fixed_effect_col=fixed_effect_col)
 
         # Convert to DataFrame for compatibility
         predictions = pd.DataFrame(predictions, index=outputs.index, columns=[name])

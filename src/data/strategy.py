@@ -53,26 +53,74 @@ class Strategy:
         StrategyWrapper(self.manager.universe.ticks, self)(*args, **kwargs)
 
     
-
     @staticmethod
-    def butterfly_spread(data: pd.DataFrame, **kwargs) -> pd.Series:
-        """
-        Calculate butterfly spread returns for all feasible trades in a DataFrame.
-        Fully kwargs-compatible.
-        """
-        from src.strategies.butterfly_spread import butterfly_returns
+    def earnings_calendar_spread(data, **kwargs):
+        """Implements an earnings calendar spread strategy."""
 
-        data_copy = data.copy()
-        cp_flag = kwargs.get('call_put', 'c')
-        ttm = kwargs.get('ttm', 30)
-        hold = kwargs.get('hold_days', 15)
-        name = kwargs.get('name', f'butterfly_spread_ttm{ttm}_hold{hold}')
+        entry_offset = kwargs.get("entry_offset", 1)
+        exit_offset = kwargs.get("exit_offset", 0)
+        exit_tolerance = kwargs.get("exit_tolerance", 3)
+        position = kwargs.get("position", 1)  
+        call_delta = kwargs.get("delta", 0.5)
+        put_delta = kwargs.get("put_delta", -0.5)
+        ttm_short = kwargs.get("ttm_short", 14)
+        ttm_long = kwargs.get("ttm_long", 30)
 
-        filtered_data = data_copy[
-            (data_copy['call_put'] == cp_flag) & 
-            (data_copy['ttm'] >= ttm - hold) &
-            (data_copy['ttm'] <= ttm)
-        ]
-        res = butterfly_returns(filtered_data, **kwargs)
-        res.name= name
-        return res
+        filtered_df = data.copy()[(data['bdays_to_earnings'] <= entry_offset) | (data['bdays_since_earnings'] <= exit_offset)]
+        dbf_mask = (filtered_df['bdays_to_earnings'] == entry_offset)
+        after_mask = (filtered_df['bdays_since_earnings'] >= exit_offset  & (filtered_df['bdays_since_earnings'] < exit_offset + exit_tolerance))
+        post_data = filtered_df[after_mask].copy()
+
+        short_call = filtered_df[(dbf_mask) & (filtered_df['ttm'] <= ttm_short) & (filtered_df['delta'] >= call_delta) & (filtered_df['call_put'] == 'c')]
+        short_put = filtered_df[(dbf_mask) & (filtered_df['ttm'] <= ttm_short) & (filtered_df['delta'] <= put_delta) & (filtered_df['call_put'] == 'p')]
+        long_call = filtered_df[(dbf_mask) & (filtered_df['ttm'] >= ttm_long) & (filtered_df['delta'] >= call_delta) & (filtered_df['call_put'] == 'c')]
+        long_put = filtered_df[(dbf_mask) & (filtered_df['ttm'] >= ttm_long) & (filtered_df['delta'] <= put_delta) & (filtered_df['call_put'] == 'p')]
+
+        # Take nearest delta if multiple options meet criteria
+        if not short_call.empty:
+            short_call = short_call.loc[short_call.groupby('trade_date')['delta'].idxmin()]
+        if not short_put.empty:
+            short_put = short_put.loc[short_put.groupby('trade_date')['delta'].idxmin()]
+        if not long_call.empty:
+            long_call = long_call.loc[long_call.groupby('trade_date')['delta'].idxmin()]
+        if not long_put.empty:
+            long_put = long_put.loc[long_put.groupby('trade_date')['delta'].idxmin()]
+
+        short_call = short_call.loc[short_call.groupby('trade_date')['expiry_date'].idxmax()]
+        short_put = short_put.loc[short_put.groupby('trade_date')['expiry_date'].idxmax()]
+        long_call = long_call.loc[long_call.groupby('trade_date')['expiry_date'].idxmin()]
+        long_put = long_put.loc[long_put.groupby('trade_date')['expiry_date'].idxmin()]
+
+        for df, side in zip([short_call, short_put, long_call, long_put], [-1, -1, 1, 1]):
+            df['position'] = side * position
+            df['data_index'] = df.index
+
+        entries = pd.concat([short_call, short_put, long_call, long_put])
+
+        # Use a Series instead of a list, keyed by the entries index
+        exit_prices = pd.Series(index=entries.index, dtype=float)
+        exit_date = pd.Series(index=entries.index, dtype=int)
+        entry_prices = entries['mid_price'].copy()
+
+        for idx, row in entries.iterrows():
+            candidate_exits = post_data[
+                (post_data['strike'] == row['strike']) &
+                (post_data['expiry_date'] == row['expiry_date']) &
+                (post_data['call_put'] == row['call_put'])
+            ]
+            if not candidate_exits.empty:
+                exit_prices.loc[idx] = candidate_exits.loc[candidate_exits['ttm'].idxmin(), 'mid_price']
+                exit_date.loc[idx] = candidate_exits.loc[candidate_exits['ttm'].idxmin()].name[1]  # trade_date index
+            else:
+                exit_prices.loc[idx] = np.nan
+
+        entries['mid_price_exit'] = exit_prices
+        entries['data_index_exit'] = exit_date
+        entries['pnl'] = entries['position'] * (entries['mid_price_exit'] - entry_prices) / entry_prices
+
+        results = entries.set_index('data_index')[['data_index_exit', 'position', 'mid_price', 'mid_price_exit', 'pnl']]
+        results = results.reindex(data.index) 
+        results = results.rename(columns={'mid_price': 'mid_price_entry', 'data_index_exit': 'trade_exit_date'}) 
+
+        return results
+

@@ -87,7 +87,6 @@ class Transformer:
         
         return data
     
-
     @staticmethod
     def scale_by_splits(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Scales option prices for stock splits"""

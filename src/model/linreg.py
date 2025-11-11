@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 
 import pandas as pd
+import numpy as np
 
 from src.model.base import BaseModel
 
@@ -21,22 +22,23 @@ class LinearRegression(BaseModel):
     
     @staticmethod
     def serialise(**kwargs) -> None:
-        tick = kwargs.get("tick", "")
-        tmp_dir = kwargs.get("tmp_dir", "./tmp/json/")
-        model_params = kwargs.get("model_params", None)
+        tick = kwargs["tick"]
+        tmp_dir = Path(kwargs.get("tmp_dir", "./tmp/json/"))
+        params = kwargs["model_params"]
 
-        if model_params is None:
-            raise ValueError("model_params must be provided for serialization.")
-
-        Path(tmp_dir).mkdir(parents=True, exist_ok=True)
-
-        # Convert numpy arrays to lists for JSON serialization
-        serialisable = {
-            "coef_": model_params["coef_"],
-            "intercept_": model_params["intercept_"],
+        payload = {
+            "coef_": params["coef_"],
+            "intercept_": params["intercept_"],
+            "X_cols": params["X_cols"],
+            "fixed_effect_columns": params["fixed_effect_columns"],
         }
-        with open(f"{tmp_dir}/{tick}_linreg.json", "w") as f:
-            json.dump(serialisable, f, indent=2)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_dir / f"{tick}_linreg.json").write_text(json.dumps(payload, indent=2))
+
+    @staticmethod
+    def load(tick: str, tmp_dir: str = "./tmp/json/") -> dict:
+        return json.loads(Path(tmp_dir, f"{tick}_linreg.json").read_text())
+
 
     @staticmethod
     def fit(outputs, X_cols: list[str], y_col: str, **kwargs) -> dict:
@@ -44,62 +46,44 @@ class LinearRegression(BaseModel):
         from sklearn.linear_model import LinearRegression as SklearnLinearRegression
         import pandas as pd
 
-        fixed_effect_col = kwargs.get("fixed_effect_col")  # get from kwargs
+        fixed_effect_col = kwargs.get("fixed_effect_col", None)
 
         X = outputs[X_cols].copy()
         y = outputs[y_col]
-
-        # Add fixed effects if specified
+        
+        ## Fit method, after creating dummy columns
         if fixed_effect_col is not None and fixed_effect_col in outputs.columns:
-            # One-hot encode the fixed effect, drop first to avoid multicollinearity
             dummies = pd.get_dummies(outputs[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
             X = pd.concat([X, dummies], axis=1)
+            fixed_effect_columns = dummies.columns.tolist()  # store column names
+        else:
+            fixed_effect_columns = []
 
         model = SklearnLinearRegression()
         model.fit(X, y)
 
-        # Return learned parameters for serialization
         params = {
             "coef_": model.coef_.tolist(),
-            "intercept_": model.intercept_.tolist()
-            if hasattr(model.intercept_, "__len__")
-            else model.intercept_,
-            "X_cols": X.columns.tolist()  # save columns for prediction
+            "intercept_": model.intercept_.tolist(),
+            "X_cols": X_cols,  # original feature names
+            "fixed_effect_columns": fixed_effect_columns  # new!
         }
-
         return params
-
+    
     @staticmethod
     def predict(X: pd.DataFrame, **kwargs) -> pd.Series:
-        """Predict using linear regression model parameters."""
-        import numpy as np
-        params = kwargs.get("model_params")
-        if params is None:
-            raise ValueError("Model parameters must be provided for prediction.")
+        params = kwargs.get("model_params") or LinearRegression.load(kwargs["tick"], kwargs.get("tmp_dir"))
+        X_pred = X.reindex(columns=params["X_cols"], copy=True)
 
-        X_cols = kwargs.get("X_cols")  # Columns used for training
-        fixed_effect_col = kwargs.get("fixed_effect_col")
-
-        # Start with original features
-        X_pred = X[X_cols].copy()
-
-        # Add fixed effects if applicable
-        if fixed_effect_col is not None:
-            fe_cols = params.get("fixed_effect_columns")  # stored during fit
-            X_fe = pd.get_dummies(X[fixed_effect_col], drop_first=False)
-
-            # Ensure same order and missing columns are filled with 0
-            for col in fe_cols:
-                if col not in X_fe:
-                    X_fe[col] = 0
-            X_fe = X_fe[fe_cols]  # reorder to match training
-            X_pred = pd.concat([X_pred, X_fe], axis=1)
+        fe_col = kwargs.get("fixed_effect_col")
+        if fe_col:
+            dummies = pd.get_dummies(X[fe_col], prefix=fe_col, drop_first=True)
+            dummies = dummies.reindex(columns=params["fixed_effect_columns"], fill_value=0)
+            X_pred = pd.concat([X_pred, dummies], axis=1)
 
         coef = np.array(params["coef_"])
-        intercept = params["intercept_"]
-
-        preds = X_pred.values @ coef + intercept
-        return pd.Series(preds, index=X.index)
+        intercept = np.array(params["intercept_"])
+        return pd.Series(X_pred.values @ coef + intercept, index=X.index)
     
     @staticmethod
     def fit_predict(outputs, **kwargs):
@@ -113,12 +97,17 @@ class LinearRegression(BaseModel):
         params = LinearRegression.fit(outputs, X_cols, y_col, fixed_effect_col=fixed_effect_col)
 
         # Predict
-        predictions = LinearRegression.predict(outputs, X_cols=X_cols, model_params=params, fixed_effect_col=fixed_effect_col)
+        predictions = LinearRegression.predict(
+            outputs,
+            X_cols=X_cols,
+            model_params=params,
+            fixed_effect_col=fixed_effect_col
+        )
 
-        # Convert to DataFrame for compatibility
+        # Convert to DataFrame for pipeline compatibility
         predictions = pd.DataFrame(predictions, index=outputs.index, columns=[name])
 
-        # Optionally save parameters (e.g., as JSON)
+        # Optionally save parameters
         if kwargs.get("save_params", False):
             LinearRegression.serialise(
                 tick=kwargs.get("tick", ""),
@@ -126,4 +115,5 @@ class LinearRegression(BaseModel):
                 model_params=params,
             )
 
+        # Return a tuple: (name, model parameters, predictions)
         return name, params, predictions

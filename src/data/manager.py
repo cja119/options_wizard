@@ -243,7 +243,6 @@ class DataManager:
                 if isinstance(value, tuple):
                     kwargs[key] = list(value)
             print(f"Running post-processing method {method.__name__} for ticks {ticks}")
-            print(kwargs)
             self.run_method_combined(ticks, method, kwargs)
 
         return None
@@ -263,7 +262,7 @@ class DataManager:
         else:
             self.combined_outputs[method.__name__] = pd.concat(
                 [self.combined_outputs[method.__name__], output_df], axis=0
-            ).dropna()
+            )
 
         for tick in ticks:
             tick_df = output_df[output_df['tick'] == tick].drop(columns=['tick'])

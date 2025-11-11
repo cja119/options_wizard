@@ -38,10 +38,7 @@ class StrategyWrapper:
 
 
 class Strategy:
-    def __init__(self, manager):
-        super().__init__(manager)
-        return None
-    
+   
     def __init__(self, manager: DataManager):
         self.manager: DataManager = manager
         return None
@@ -52,104 +49,104 @@ class Strategy:
     def __call__(self, *args: str, **kwargs: dict[str, any]) -> None:
         StrategyWrapper(self.manager.universe.ticks, self)(*args, **kwargs)
 
-@staticmethod
-def three_by_ones(data, **kwargs) -> pd.DataFrame:
-    """
-    Implements a 3x1 ratio option strategy.
-    Long 1 option near target delta, short 3 options at a strike giving ~zero cost.
-    Exits after a fixed hold period (in trading days).
-    """
+    @staticmethod
+    def three_by_ones(data, **kwargs) -> pd.DataFrame:
+        """
+        Implements a 3x1 ratio option strategy.
+        Long 1 option near target delta, short 3 options at a strike giving ~zero cost.
+        Exits after a fixed hold period (in trading days).
+        """
 
-    # --- PARAMETERS ---
-    entry_ttm = kwargs.get("entry_ttm", 90)
-    ttm_tol = kwargs.get("ttm_tol", 5)
-    delta_long = kwargs.get("moneyness_one", 0.35)
-    delta_tol = kwargs.get("moneyness_tol", 0.05)
-    call_put = kwargs.get("call_put", "p")
-    hold_period = kwargs.get("hold_period", 10)  # number of trading days to hold
-    position = kwargs.get("position", 1)
+        # --- PARAMETERS ---
+        entry_ttm = kwargs.get("entry_ttm", 90)
+        ttm_tol = kwargs.get("ttm_tol", 5)
+        delta_long = kwargs.get("moneyness_one", 0.35)
+        delta_tol = kwargs.get("moneyness_tol", 0.05)
+        call_put = kwargs.get("call_put", "p")
+        hold_period = kwargs.get("hold_period", 10)  # number of trading days to hold
+        position = kwargs.get("position", 1)
 
-    # --- FILTER INITIAL DATA ---
-    filtered_df = data.copy()[
-        (data['call_put'] == call_put)
-        & (data['ttm'] <= entry_ttm + ttm_tol)
-        & (data['ttm'] >= entry_ttm - ttm_tol)
-    ]
-
-    # --- FIND LONG LEG ---
-    delta_lower = delta_long - delta_tol
-    delta_upper = delta_long + delta_tol
-
-    long_df = filtered_df[
-        (filtered_df['delta'] > delta_lower) &
-        (filtered_df['delta'] < delta_upper)
-    ]
-
-    # choose per expiration: shortest TTM, smallest delta within band
-    longs = long_df.loc[long_df.groupby('exdate')['ttm'].idxmin()]
-    longs = longs.loc[longs.groupby('exdate')['delta'].idxmin()]
-
-    # --- FIND SHORT LEG ---
-    # Want the short strike such that 3*long_mid ≈ short_mid (zero-cost)
-    shorts = []
-    for exdate, long_row in longs.groupby('exdate'):
-        subset = filtered_df[filtered_df['exdate'] == exdate]
-        if subset.empty:
-            continue
-
-        target_price = long_row['mid_price'].values[0] * 3
-        short_candidate = subset.iloc[(subset['mid_price'] - target_price).abs().argsort()[:1]]
-        shorts.append(short_candidate)
-
-    if shorts:
-        shorts = pd.concat(shorts)
-    else:
-        return pd.DataFrame()  # no valid shorts found
-
-    # --- ASSIGN POSITIONS ---
-    longs = longs.copy()
-    shorts = shorts.copy()
-    longs['position'] = +1 * position
-    shorts['position'] = -3 * position
-
-    entries = pd.concat([longs, shorts])
-    entries['data_index'] = entries.index
-    entry_prices = entries['mid_price'].copy()
-
-    # --- EXIT LOGIC (BASED ON HOLD PERIOD) ---
-    exit_prices = pd.Series(index=entries.index, dtype=float)
-    exit_date = pd.Series(index=entries.index, dtype=int)
-
-    for idx, row in entries.iterrows():
-        trade_idx = row.name[1] if isinstance(row.name, tuple) else row.name
-        candidate_exits = data[
-            (data['trade_date'] > trade_idx) &
-            (data['trade_date'] <= trade_idx + hold_period) &
-            (data['strike'] == row['strike']) &
-            (data['exdate'] == row['exdate']) &
-            (data['call_put'] == row['call_put'])
+        # --- FILTER INITIAL DATA ---
+        filtered_df = data.copy()[
+            (data['call_put'] == call_put)
+            & (data['ttm'] <= entry_ttm + ttm_tol)
+            & (data['ttm'] >= entry_ttm - ttm_tol)
         ]
 
-        if not candidate_exits.empty:
-            # Exit on the last available day within hold period
-            exit_row = candidate_exits.iloc[-1]
-            exit_prices.loc[idx] = exit_row['mid_price']
-            exit_date.loc[idx] = exit_row.name[1] if isinstance(exit_row.name, tuple) else exit_row.name
+        # --- FIND LONG LEG ---
+        delta_lower = delta_long - delta_tol
+        delta_upper = delta_long + delta_tol
+
+        long_df = filtered_df[
+            (filtered_df['delta'] > delta_lower) &
+            (filtered_df['delta'] < delta_upper)
+        ]
+
+        # choose per expiration: shortest TTM, smallest delta within band
+        longs = long_df.loc[long_df.groupby('exdate')['ttm'].idxmin()]
+        longs = longs.loc[longs.groupby('exdate')['delta'].idxmin()]
+
+        # --- FIND SHORT LEG ---
+        # Want the short strike such that 3*long_mid ≈ short_mid (zero-cost)
+        shorts = []
+        for exdate, long_row in longs.groupby('exdate'):
+            subset = filtered_df[filtered_df['exdate'] == exdate]
+            if subset.empty:
+                continue
+
+            target_price = long_row['mid_price'].values[0] * 3
+            short_candidate = subset.iloc[(subset['mid_price'] - target_price).abs().argsort()[:1]]
+            shorts.append(short_candidate)
+
+        if shorts:
+            shorts = pd.concat(shorts)
         else:
-            exit_prices.loc[idx] = np.nan
-            exit_date.loc[idx] = np.nan
+            return pd.DataFrame()  # no valid shorts found
 
-    # --- COMPUTE RESULTS ---
-    entries['mid_price_exit'] = exit_prices
-    entries['trade_exit_date'] = exit_date
-    entries['pnl'] = entries['position'] * (entries['mid_price_exit'] - entry_prices)
+        # --- ASSIGN POSITIONS ---
+        longs = longs.copy()
+        shorts = shorts.copy()
+        longs['position'] = +1 * position
+        shorts['position'] = -3 * position
 
-    results = entries.set_index('data_index')[
-        ['trade_exit_date', 'position', 'mid_price', 'mid_price_exit', 'pnl']
-    ]
-    results = results.rename(columns={'mid_price': 'mid_price_entry'})
+        entries = pd.concat([longs, shorts])
+        entries['data_index'] = entries.index
+        entry_prices = entries['mid_price'].copy()
 
-    return results
+        # --- EXIT LOGIC (BASED ON HOLD PERIOD) ---
+        exit_prices = pd.Series(index=entries.index, dtype=float)
+        exit_date = pd.Series(index=entries.index, dtype=int)
+
+        for idx, row in entries.iterrows():
+            trade_idx = row.name[1] if isinstance(row.name, tuple) else row.name
+            candidate_exits = data[
+                (data['trade_date'] > trade_idx) &
+                (data['trade_date'] <= trade_idx + hold_period) &
+                (data['strike'] == row['strike']) &
+                (data['exdate'] == row['exdate']) &
+                (data['call_put'] == row['call_put'])
+            ]
+
+            if not candidate_exits.empty:
+                # Exit on the last available day within hold period
+                exit_row = candidate_exits.iloc[-1]
+                exit_prices.loc[idx] = exit_row['mid_price']
+                exit_date.loc[idx] = exit_row.name[1] if isinstance(exit_row.name, tuple) else exit_row.name
+            else:
+                exit_prices.loc[idx] = np.nan
+                exit_date.loc[idx] = np.nan
+
+        # --- COMPUTE RESULTS ---
+        entries['mid_price_exit'] = exit_prices
+        entries['trade_exit_date'] = exit_date
+        entries['pnl'] = entries['position'] * (entries['mid_price_exit'] - entry_prices)
+
+        results = entries.set_index('data_index')[
+            ['trade_exit_date', 'position', 'mid_price', 'mid_price_exit', 'pnl']
+        ]
+        results = results.rename(columns={'mid_price': 'mid_price_entry'})
+
+        return results
     
     @staticmethod
     def earnings_calendar_spread(data, **kwargs):

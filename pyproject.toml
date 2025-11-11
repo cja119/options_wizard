@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "OptionsWizard"
 version = "0.1"
-description = "Options chain modelling an ddata analysis"
+description = "Options chain modelling an data analysis"
 authors = [
   { name = "Cameron Aldren", email = "cameronaldren@icloud.com" }
 ]

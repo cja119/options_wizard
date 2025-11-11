@@ -2,13 +2,13 @@
 Definitions for trade strategies
 """
 from __future__ import annotations
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 import numpy as np
 
-from src.data.manager import DataManager
-from src.data.utils import US_BD
+if TYPE_CHECKING:
+    from .manager import DataManager
 
 
 class StrategyWrapper:

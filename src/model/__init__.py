@@ -1,9 +1,9 @@
-from src.model.linreg import LinearRegression
-from src.model.logreg import LogisticRegression
-from src.model.mlp_reg import MultiLayerPerceptron
+from .linreg import LinearRegression as LinReg
+from .logreg import LogisticRegression as LogReg
+from .mlp_reg import MultiLayerPerceptron as MLP
 
 __all__ = [
-    "LinearRegression",
-    "LogisticRegression",
-    "MultiLayerPerceptron",
+    "LinReg",
+    "LogReg",
+    "MLP",
 ]

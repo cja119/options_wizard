@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 
 if TYPE_CHECKING:
-    from src.data.manager import DataManager
+    from .manager import DataManager
 
 
 class TransformWrapper:

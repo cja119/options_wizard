@@ -4,12 +4,11 @@ Base model class
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Callable
 
 import pandas as pd
 
-from src.universe import Universe
-from src.data.manager import DataManager
+from data.manager import DataManager
 
 class ModelWrapper:
     def __init__(self, ticks: list[str] | str, model: BaseModel):

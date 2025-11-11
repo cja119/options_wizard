@@ -15,7 +15,7 @@ import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 if TYPE_CHECKING:
-    from src.universe import Universe
+    from ..universe import Universe
 
 def make_hashable(obj):
     if isinstance(obj, (list, tuple)):

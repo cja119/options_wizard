@@ -10,7 +10,7 @@ from sklearn.linear_model import LogisticRegression as SklearnLogisticRegression
 import numpy as np
 import pandas as pd
 
-from src.model.base import BaseModel
+from .base import BaseModel
 
 
 

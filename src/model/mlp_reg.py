@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import json 
 
-from src.model.base import BaseModel
+from .base import BaseModel
 
 
 class MultiLayerPerceptron(BaseModel):
@@ -39,10 +39,11 @@ class MultiLayerPerceptron(BaseModel):
             X_df = pd.concat([X_df, dummies], axis=1)
 
         X = X_df.values
+        activation = kwargs.get("activation", "relu")
 
         hidden_layer_sizes = kwargs.get("hidden_layer_sizes")
         if hidden_layer_sizes is None:
-            best_size, hidden_layer_sizes = MultiLayerPerceptron.select_hidden_layer_size(
+            hidden_layer_sizes = MultiLayerPerceptron.select_hidden_layer_size(
                 outputs,
                 X_cols,
                 y_col,
@@ -52,7 +53,6 @@ class MultiLayerPerceptron(BaseModel):
                 alpha=kwargs.get("alpha", 0.001),
                 fixed_effect_col=kwargs.get("fixed_effect_col"),
             )
-        activation = kwargs.get("activation", "relu")
 
         model = Pipeline([
             ("scaler", StandardScaler()),
@@ -259,4 +259,4 @@ class MultiLayerPerceptron(BaseModel):
                 best_score = score
                 best_size = size
 
-        return best_size, (best_size,)
+        return best_size

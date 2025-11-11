@@ -10,7 +10,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from src.model.base import BaseModel
+from .base import BaseModel
 
 
 

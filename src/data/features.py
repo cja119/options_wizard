@@ -8,10 +8,8 @@ from typing import TYPE_CHECKING, Callable, List
 import pandas as pd
 import numpy as np
 
-from src import data
-
 if TYPE_CHECKING:
-    from src.data.manager import DataManager
+    from .manager import DataManager
 
 def dataprep(method: Callable) -> Callable:
     """Decorator to mark a feature method as a data preparation step."""

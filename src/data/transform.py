@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, List, Dict, Any, Tuple
 from matplotlib import ticker
 import pandas as pd
 import numpy as np
+import inspect
 
 if TYPE_CHECKING:
     from .manager import DataManager
@@ -49,6 +50,19 @@ class Transformer:
     def __call__(self, *args: str, **kwargs: dict[str, any]) -> None:
         TransformWrapper(self.manager.universe.ticks, self)(*args, **kwargs)
         return None
+    
+    def add(self, name: str, func: Callable) -> None:
+        """Dynamically add a new feature method."""
+        ref_sig = inspect.signature(self.drop_stale_options)
+        func_sig = inspect.signature(func)
+
+        if ref_sig != func_sig:
+            raise TypeError(
+                f"Function '{func.__name__}' signature {func_sig} does not match expected {ref_sig}"
+            )
+        setattr(self, name, func.__get__(self))
+        return None
+
 
     @staticmethod
     def drop_stale_options(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
@@ -113,14 +127,17 @@ class Transformer:
         """Splits data into training and testing sets based on a specified test size."""
         test_size = kwargs.get("test_size", 0.2)
         drop_out_of_sample = kwargs.get("drop_out_of_sample", False)
+        drop_in_sample = kwargs.get("drop_in_sample", False)
         data = data.sort_values('trade_date')
         unique_dates = data['trade_date'].drop_duplicates().sort_values()
         split_index = int(len(unique_dates) * (1 - test_size))
         split_date = unique_dates.iloc[split_index]
         if drop_out_of_sample:
             data = data[data['trade_date'] < split_date]
+        elif drop_in_sample:
+            data = data[data['trade_date'] >= split_date]
         else:
-            data['set'] = ['train' if date < split_date else 'test' for date in data['trade_date']]
+            data['set'] = ['train' if date < split_date else 'test' for date in data['trade_date']]        
         return data
 
     @staticmethod

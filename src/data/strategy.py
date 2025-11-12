@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 import numpy as np
+import inspect
+
+from scipy import stats
 
 if TYPE_CHECKING:
     from .manager import DataManager
@@ -49,104 +52,131 @@ class Strategy:
     def __call__(self, *args: str, **kwargs: dict[str, any]) -> None:
         StrategyWrapper(self.manager.universe.ticks, self)(*args, **kwargs)
 
-    @staticmethod
-    def three_by_ones(data, **kwargs) -> pd.DataFrame:
-        """
-        Implements a 3x1 ratio option strategy.
-        Long 1 option near target delta, short 3 options at a strike giving ~zero cost.
-        Exits after a fixed hold period (in trading days).
-        """
+    def add(self, name: str, func: Callable) -> None:
+        """Dynamically add a new feature method."""
+        ref_sig = inspect.signature(self.earnings_calendar_spread)
+        func_sig = inspect.signature(func)
 
-        # --- PARAMETERS ---
+        if ref_sig != func_sig:
+            raise TypeError(
+                f"Function '{func.__name__}' signature {func_sig} does not match expected {ref_sig}"
+            )
+        setattr(self, name, func.__get__(self))
+        return None
+    
+    @staticmethod
+    def ratio_spread(data, **kwargs) -> pd.DataFrame:
+        """
+        Implements a ratio spread option strategy that works for both calls and puts.
+        Long 1 option near target delta (by absolute value), short N options at a
+        strike giving ~zero cost. Exits after a fixed hold period (trading days).
+        """
         entry_ttm = kwargs.get("entry_ttm", 90)
         ttm_tol = kwargs.get("ttm_tol", 5)
-        delta_long = kwargs.get("moneyness_one", 0.35)
+        delta_long = kwargs.get("moneyness_long", 0.35)
+        delta_short = kwargs.get("moneyness_short", 0.10)
+        short_ratio = kwargs.get("short_ratio", 3)
         delta_tol = kwargs.get("moneyness_tol", 0.05)
         call_put = kwargs.get("call_put", "p")
-        hold_period = kwargs.get("hold_period", 10)  # number of trading days to hold
+        hold_period = kwargs.get("hold_period", 30)
         position = kwargs.get("position", 1)
 
-        # --- FILTER INITIAL DATA ---
-        filtered_df = data.copy()[
-            (data['call_put'] == call_put)
-            & (data['ttm'] <= entry_ttm + ttm_tol)
-            & (data['ttm'] >= entry_ttm - ttm_tol)
+        data = data.copy()
+        data["abs_delta"] = data["delta"].abs()
+        data['data_index'] = data.index
+
+        filtered_df = data[
+            (data["call_put"] == call_put)
+            & (data["ttm"].between(entry_ttm - ttm_tol, entry_ttm + ttm_tol))
+            & (data["abs_delta"].between(delta_short, delta_long))
         ]
 
-        # --- FIND LONG LEG ---
+        if filtered_df.empty:
+            return pd.DataFrame(columns=[
+                "trade_exit_date", "position", "mid_price_entry", "mid_price_exit", "pnl"
+            ])
+
         delta_lower = delta_long - delta_tol
         delta_upper = delta_long + delta_tol
 
         long_df = filtered_df[
-            (filtered_df['delta'] > delta_lower) &
-            (filtered_df['delta'] < delta_upper)
+            (filtered_df["abs_delta"] > delta_lower) &
+            (filtered_df["abs_delta"] < delta_upper)
         ]
 
-        # choose per expiration: shortest TTM, smallest delta within band
-        longs = long_df.loc[long_df.groupby('exdate')['ttm'].idxmin()]
-        longs = longs.loc[longs.groupby('exdate')['delta'].idxmin()]
+        if long_df.empty:
+            return pd.DataFrame(columns=[
+                "trade_exit_date", "position", "mid_price_entry", "mid_price_exit", "pnl"
+            ])
 
-        # --- FIND SHORT LEG ---
-        # Want the short strike such that 3*long_mid ≈ short_mid (zero-cost)
+        longs = long_df.loc[long_df.groupby("expiry_date")["ttm"].idxmin()]
+        longs = longs.loc[longs.groupby("expiry_date")["abs_delta"].idxmin()]
+
         shorts = []
-        for exdate, long_row in longs.groupby('exdate'):
-            subset = filtered_df[filtered_df['exdate'] == exdate]
+        for (trade_date, expiry_date), long_row in longs.groupby(["trade_date", "expiry_date"]):
+            subset = filtered_df[
+                (filtered_df["trade_date"] == trade_date) &
+                (filtered_df["expiry_date"] == expiry_date)
+            ]
+            subset = subset.drop(index=long_row["data_index"].values, errors="ignore")
             if subset.empty:
                 continue
-
-            target_price = long_row['mid_price'].values[0] * 3
-            short_candidate = subset.iloc[(subset['mid_price'] - target_price).abs().argsort()[:1]]
+            target_price = long_row["mid_price"].values[0] / short_ratio
+            short_candidate = subset.iloc[
+                (subset["mid_price"] - target_price).abs().argsort()[:1]
+            ]
             shorts.append(short_candidate)
 
-        if shorts:
-            shorts = pd.concat(shorts)
-        else:
-            return pd.DataFrame()  # no valid shorts found
+        if not shorts:
+            return pd.DataFrame(columns=[
+                "trade_exit_date", "position", "mid_price_entry", "mid_price_exit", "pnl"
+            ]).set_index(pd.Index([], name=data.index.names[0]))
 
-        # --- ASSIGN POSITIONS ---
+        shorts = pd.concat(shorts).copy()
         longs = longs.copy()
-        shorts = shorts.copy()
-        longs['position'] = +1 * position
-        shorts['position'] = -3 * position
+
+        longs["position"] = +1 * position
+        shorts["position"] = -short_ratio * position
 
         entries = pd.concat([longs, shorts])
-        entries['data_index'] = entries.index
-        entry_prices = entries['mid_price'].copy()
+        entry_prices = entries["mid_price"].copy()
 
-        # --- EXIT LOGIC (BASED ON HOLD PERIOD) ---
         exit_prices = pd.Series(index=entries.index, dtype=float)
         exit_date = pd.Series(index=entries.index, dtype=int)
+        hold_td = pd.Timedelta(days=hold_period)
 
         for idx, row in entries.iterrows():
             trade_idx = row.name[1] if isinstance(row.name, tuple) else row.name
             candidate_exits = data[
-                (data['trade_date'] > trade_idx) &
-                (data['trade_date'] <= trade_idx + hold_period) &
-                (data['strike'] == row['strike']) &
-                (data['exdate'] == row['exdate']) &
-                (data['call_put'] == row['call_put'])
+                (data["trade_date"] > trade_idx) &
+                (data["trade_date"] <= trade_idx + hold_td) &
+                (data["strike"] == row["strike"]) &
+                (data["expiry_date"] == row["expiry_date"]) &
+                (data["call_put"] == row["call_put"])
             ]
-
             if not candidate_exits.empty:
-                # Exit on the last available day within hold period
                 exit_row = candidate_exits.iloc[-1]
-                exit_prices.loc[idx] = exit_row['mid_price']
-                exit_date.loc[idx] = exit_row.name[1] if isinstance(exit_row.name, tuple) else exit_row.name
+                exit_prices.loc[idx] = exit_row["mid_price"]
+                exit_date.loc[idx] = (
+                    exit_row.name[1] if isinstance(exit_row.name, tuple) else exit_row.name
+                )
             else:
                 exit_prices.loc[idx] = np.nan
                 exit_date.loc[idx] = np.nan
 
-        # --- COMPUTE RESULTS ---
-        entries['mid_price_exit'] = exit_prices
-        entries['trade_exit_date'] = exit_date
-        entries['pnl'] = entries['position'] * (entries['mid_price_exit'] - entry_prices)
+        entries["mid_price_exit"] = exit_prices
+        entries["trade_exit_date"] = exit_date
+        entries["pnl"] = entries["position"] * (entries["mid_price_exit"] - entry_prices)
 
-        results = entries.set_index('data_index')[
-            ['trade_exit_date', 'position', 'mid_price', 'mid_price_exit', 'pnl']
-        ]
-        results = results.rename(columns={'mid_price': 'mid_price_entry'})
+        results = entries.set_index("data_index")[
+            ["trade_exit_date", "position", "mid_price", "mid_price_exit", "pnl"]
+        ].rename(columns={"mid_price": "mid_price_entry"})
+        results = results.reindex(data.index)
 
+        results = results.drop(columns=["abs_delta"], errors="ignore")
         return results
+
+
     
     @staticmethod
     def earnings_calendar_spread(data, **kwargs):

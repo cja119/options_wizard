@@ -5,7 +5,6 @@ from data import (
     Transformer
 )
 import model
-import strategies
 from universe import Universe
 import backtest
 

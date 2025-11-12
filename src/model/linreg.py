@@ -3,7 +3,6 @@ Linear regression model implementation.
 """
 
 from __future__ import annotations
-from typing import Optional
 from pathlib import Path
 import json
 
@@ -42,78 +41,63 @@ class LinearRegression(BaseModel):
 
     @staticmethod
     def fit(outputs, X_cols: list[str], y_col: str, **kwargs) -> dict:
-        """Fit linear regression model, optionally with fixed effects."""
         from sklearn.linear_model import LinearRegression as SklearnLinearRegression
-        import pandas as pd
 
-        fixed_effect_col = kwargs.get("fixed_effect_col", None)
-
-        X = outputs[X_cols].copy()
+        fixed_effect_col = kwargs.get("diff_ticks", None)
+        X_df = outputs[X_cols].copy()
         y = outputs[y_col]
-        
-        ## Fit method, after creating dummy columns
-        if fixed_effect_col is not None and fixed_effect_col in outputs.columns:
+
+        if fixed_effect_col and fixed_effect_col in outputs.columns:
             dummies = pd.get_dummies(outputs[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
-            X = pd.concat([X, dummies], axis=1)
-            fixed_effect_columns = dummies.columns.tolist()  # store column names
+            X_df = pd.concat([X_df, dummies], axis=1)
+            fixed_effect_columns = dummies.columns.tolist()
         else:
             fixed_effect_columns = []
 
-        model = SklearnLinearRegression()
-        model.fit(X, y)
+        model = SklearnLinearRegression().fit(X_df, y)
 
         params = {
             "coef_": model.coef_.tolist(),
-            "intercept_": model.intercept_.tolist(),
-            "X_cols": X_cols,  # original feature names
-            "fixed_effect_columns": fixed_effect_columns  # new!
+            "intercept_": float(model.intercept_),
+            "X_cols": X_df.columns.tolist(),            # full feature order
+            "fixed_effect_columns": fixed_effect_columns,
         }
-        return params
-    
+        name = kwargs.get("name", "linreg_pred")
+        empty_preds = pd.DataFrame(index=outputs.index, columns=[name])
+        return name, params, empty_preds
+        
     @staticmethod
-    def predict(X: pd.DataFrame, **kwargs) -> pd.Series:
-        params = kwargs.get("model_params") or LinearRegression.load(kwargs["tick"], kwargs.get("tmp_dir"))
-        X_pred = X.reindex(columns=params["X_cols"], copy=True)
+    def predict(X: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        params = kwargs.get("model_params") or LinearRegression.load(
+            kwargs["tick"], kwargs.get("tmp_dir", "./tmp/json/")
+        )
+        fixed_effect_col = kwargs.get("diff_ticks", None)
 
-        fe_col = kwargs.get("fixed_effect_col")
-        if fe_col:
-            dummies = pd.get_dummies(X[fe_col], prefix=fe_col, drop_first=True)
-            dummies = dummies.reindex(columns=params["fixed_effect_columns"], fill_value=0)
+        X_pred = X.copy()
+        if fixed_effect_col and fixed_effect_col in X_pred.columns:
+            dummies = pd.get_dummies(X_pred[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
+            dummies = dummies.reindex(columns=params.get("fixed_effect_columns", []), fill_value=0)
             X_pred = pd.concat([X_pred, dummies], axis=1)
 
+        X_pred = X_pred.reindex(columns=params["X_cols"], fill_value=0)
+
         coef = np.array(params["coef_"])
-        intercept = np.array(params["intercept_"])
-        return pd.Series(X_pred.values @ coef + intercept, index=X.index)
+        intercept = float(params["intercept_"])
+        name = kwargs.get("name", "linreg_pred")
+        series = pd.Series(X_pred.to_numpy() @ coef + intercept, index=X.index, name=name)
+        return name, params, series.to_frame(name)
+
     
     @staticmethod
     def fit_predict(outputs, **kwargs):
-        """Fit model, generate predictions, and return pipeline-compatible tuple."""
-        name = kwargs.get("name", "linear_regression_prediction")
-        X_cols = kwargs.get("X_cols", [])
-        y_col = kwargs.get("y_col", "")
-        fixed_effect_col = kwargs.get("diff_ticks", None) 
+        name = kwargs.get("name", "linreg_pred")
+        _, params, _ = LinearRegression.fit(outputs, **kwargs)
+        _, _, preds = LinearRegression.predict(outputs, model_params=params, **kwargs)
 
-        # Fit model
-        params = LinearRegression.fit(outputs, X_cols, y_col, fixed_effect_col=fixed_effect_col)
-
-        # Predict
-        predictions = LinearRegression.predict(
-            outputs,
-            X_cols=X_cols,
-            model_params=params,
-            fixed_effect_col=fixed_effect_col
-        )
-
-        # Convert to DataFrame for pipeline compatibility
-        predictions = pd.DataFrame(predictions, index=outputs.index, columns=[name])
-
-        # Optionally save parameters
-        if kwargs.get("save_params", False):
+        if kwargs.get("save_params"):
             LinearRegression.serialise(
                 tick=kwargs.get("tick", ""),
                 tmp_dir=kwargs.get("tmp_dir", "./tmp/json/"),
                 model_params=params,
             )
-
-        # Return a tuple: (name, model parameters, predictions)
-        return name, params, predictions
+        return name, params, preds

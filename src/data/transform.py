@@ -82,6 +82,10 @@ class Transformer:
 
             # Convert trade_date just for range and merge purposes
             temp_dates = pd.to_datetime(data['trade_date'], errors='coerce')
+            try:
+                temp_dates = temp_dates.dt.tz_localize(None)
+            except TypeError:
+                pass
             min_date, max_date = temp_dates.min(), temp_dates.max()
 
             if pd.isna(min_date) or pd.isna(max_date):
@@ -113,17 +117,20 @@ class Transformer:
             close_df = close_prices.reset_index().rename(columns={'Date': 'merge_date', 'Close': 'underlying_close'})
 
             # Create a temporary datetime column for merging
-            data["_merge_date"] = pd.to_datetime(data["trade_date"], errors="coerce")
-            
-            # --- Merge underlying close prices ---
-            merged = pd.merge(
-                data,
-                close_df,
-                left_on="_merge_date",
-                right_on="merge_date",
-                how="left"
-            ).drop(columns=["_merge_date", "merge_date"])
-            return merged
+            merge_dates = pd.to_datetime(data["trade_date"], errors="coerce")
+            try:
+                merge_dates = merge_dates.dt.tz_localize(None)
+            except TypeError:
+                pass
+            close_df["merge_date"] = pd.to_datetime(close_df["merge_date"], errors="coerce")
+            try:
+                close_df["merge_date"] = close_df["merge_date"].dt.tz_localize(None)
+            except TypeError:
+                pass
+            close_series = close_df.set_index("merge_date")["underlying_close"]
+
+            data["underlying_close"] = merge_dates.map(close_series)
+            return data
 
         except Exception as e:
             raise RuntimeError(f"Failed to get underlying data for {kwargs.get('tick', '')}: {e}")
@@ -139,7 +146,12 @@ class Transformer:
 
         gap_threshold: int = kwargs.get("gap_threshold", 1)
         # Remove timezone for consistency
-        data['norm_trade_date'] = pd.to_datetime(data['trade_date']).dt.tz_localize(None)
+        norm_trade_date = pd.to_datetime(data['trade_date'], errors='coerce')
+        try:
+            norm_trade_date = norm_trade_date.dt.tz_localize(None)
+        except TypeError:
+            pass
+        data['norm_trade_date'] = norm_trade_date
 
         # Get NASDAQ calendar
         cal = ec.get_calendar("XNAS")
@@ -157,7 +169,6 @@ class Transformer:
             expected_sessions = cal.sessions_in_range(observed.min(), observed.max())
             expected_sessions = pd.DatetimeIndex(expected_sessions)
             missing_dates = list(expected_sessions.difference(observed))
-            missing_dates = list(expected_sessions.difference(observed))
 
             results.append({
                 'expiry_date': expiry,
@@ -171,13 +182,22 @@ class Transformer:
         # Convert results to DataFrame
         missing_df = pd.DataFrame(results)
 
-        # Merge back with original data
-        result = data.merge(
-            missing_df,
-            on=['expiry_date', 'strike', 'call_put'],
-            how='left'
-        )
-        result.drop(columns=['norm_trade_date'], inplace=True)
+        if missing_df.empty:
+            result = data.copy()
+            result['missing_dates'] = [[] for _ in range(len(result))]
+            result['missing_count'] = 0
+            result['gap_flag'] = False
+        else:
+            missing_df = missing_df.set_index(['expiry_date', 'strike', 'call_put'])
+            result = data.join(
+                missing_df[['missing_dates', 'missing_count', 'gap_flag']],
+                on=['expiry_date', 'strike', 'call_put']
+            )
+
+        result.drop(columns=['norm_trade_date'], inplace=True, errors='ignore')
+
+        if kwargs.get('drop_on_gap', False):
+            result = result.loc[~result['gap_flag']].copy() 
 
         return result
 
@@ -187,15 +207,15 @@ class Transformer:
         """Drops options that are stale (e.g., no volume or open interest)"""
         volume_threshold = kwargs.get("volume_threshold", 0)
         oi_threshold = kwargs.get("open_interest_threshold", 0)
-        data = data[data.isna().sum(axis=1) == 0]
+        data = data.loc[data.isna().sum(axis=1) == 0].copy()
         if "volume" in data.columns:
-            data['stale'] = data["volume"] <= volume_threshold
+            data.loc[:, 'stale'] = data["volume"] <= volume_threshold
         if "open_interest" in data.columns:
-            data['stale'] = data.get('stale', False) | (data["open_interest"] <= oi_threshold)
+            data.loc[:, 'stale'] = data.get('stale', False) | (data["open_interest"] <= oi_threshold)
         if "bid_price" in data.columns:
-            data['stale'] = data.get('stale', False) | (data["bid_price"] <= 0.01)
+            data.loc[:, 'stale'] = data.get('stale', False) | (data["bid_price"] <= 0.01)
         if "ask_price" in data.columns:
-            data['stale'] = data.get('stale', False) | (data["ask_price"] <= 0.01)
+            data.loc[:, 'stale'] = data.get('stale', False) | (data["ask_price"] <= 0.01)
         return data
 
     @staticmethod
@@ -233,15 +253,23 @@ class Transformer:
             except Exception as e:
                 return data
 
+        trade_dates = pd.to_datetime(data['trade_date'], errors='coerce')
+        try:
+            trade_dates_naive = trade_dates.dt.tz_localize(None)
+        except TypeError:
+            trade_dates_naive = trade_dates
+        cols_to_scale = ['strike', 'bid_price', 'ask_price', 'last_trade_price']
+        cols_to_scale = [c for c in cols_to_scale if c in data.columns]
+
         for date, ratio in splits.items():
             try:
                 split_date = pd.to_datetime(date)
-                mask = pd.to_datetime(data['trade_date']) < split_date
-                cols_to_scale = ['strike', 'bid_price', 'ask_price', 'last_trade_price']
-                cols_to_scale = [c for c in cols_to_scale if c in data.columns]
+                if getattr(split_date, 'tzinfo', None) is not None:
+                    split_date = split_date.tz_localize(None)
+                mask = trade_dates_naive < split_date
                 data.loc[mask, cols_to_scale] /= ratio
-                if 'underlying_close' in data.columns:
-                    data.loc[mask, 'underlying_close'] /= ratio
+                #if 'underlying_close' in data.columns:
+                #    data.loc[mask, 'underlying_close'] /= ratio
             except Exception as e:
                 print(f"Skipping split on {date}: {e}")
         return data
@@ -251,7 +279,7 @@ class Transformer:
         """Drops a contract type"""
         drop = kwargs.get('drop', None)
         if drop:
-            data = data[data['call_put']!=drop.lower()]
+            data = data.loc[data['call_put'] != drop.lower()].copy()
         return data
     
     @staticmethod
@@ -322,10 +350,18 @@ class Transformer:
         # --- Fetch and prepare earnings data ---
         ticker = yf.Ticker(tick)
         earnings_dates = ticker.get_earnings_dates(limit=100).reset_index()
-        earnings_dates = pd.to_datetime(earnings_dates["Earnings Date"]).sort_values().to_numpy()
+        earnings_series = pd.to_datetime(earnings_dates["Earnings Date"], errors='coerce')
+        if getattr(earnings_series.dt, "tz", None):
+            earnings_series = earnings_series.dt.tz_localize(None)
+        earnings_dates = earnings_series.sort_values().to_numpy()
 
         # --- Prepare trade dates ---
-        trade_dates = pd.to_datetime(data["trade_date"]).to_numpy()
+        trade_dates = pd.to_datetime(data["trade_date"], errors='coerce')
+        try:
+            trade_dates = trade_dates.dt.tz_localize(None)
+        except TypeError:
+            pass
+        trade_dates = trade_dates.to_numpy()
 
         # --- Find next and last earnings using searchsorted (O(n log m)) ---
         idx_next = np.searchsorted(earnings_dates, trade_dates, side="left")
@@ -361,7 +397,28 @@ class Transformer:
         """Converts specified columns to datetime format."""
         tz = kwargs.get('tz', 'America/New_York')
         for col in columns:
-            data[col] = pd.to_datetime(data[col]).dt.tz_localize(tz)
+            converted = pd.to_datetime(data[col], errors='coerce')
+            try:
+                data[col] = converted.dt.tz_localize(tz)
+            except TypeError:
+                data[col] = converted.dt.tz_convert(tz)
+
+            idx_name = f"{col}_idx"
+            if isinstance(data.index, pd.MultiIndex) and idx_name in data.index.names:
+                level_pos = data.index.names.index(idx_name)
+                level_values = data.index.levels[level_pos]
+                level_converted = pd.to_datetime(level_values, errors='coerce')
+                try:
+                    level_converted = level_converted.tz_localize(tz)
+                except TypeError:
+                    level_converted = level_converted.tz_convert(tz)
+                data.index = data.index.set_levels(level_converted, level=level_pos)
+            elif data.index.name == idx_name:
+                index_converted = pd.to_datetime(data.index, errors='coerce')
+                try:
+                    data.index = index_converted.tz_localize(tz)
+                except TypeError:
+                    data.index = index_converted.tz_convert(tz)
         return data
     
     @staticmethod

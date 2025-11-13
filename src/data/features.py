@@ -310,3 +310,5 @@ class Features:
 
         result_frame.set_index('trade_date_idx', inplace=True)
         return result_frame.dropna()
+
+   

@@ -90,7 +90,6 @@ class Strategy:
         elif long =='ntm':
             position = 1
 
-        data = data.copy()
         data["abs_delta"] = data["delta"].abs()
         data['data_index'] = data.index
 
@@ -252,8 +251,6 @@ class Strategy:
 
         results = results.drop(columns=["abs_delta"], errors="ignore")
         return results
-
-    
     
     @staticmethod
     def earnings_calendar_spread(data, **kwargs):

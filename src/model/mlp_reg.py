@@ -102,7 +102,7 @@ class MultiLayerPerceptron(BaseModel):
             encoder_cols = []
         
         if kwargs.get('x_val', True):
-            hidden_layer_grid = kwargs.get("hidden_layer_grid", [(8,), (16,), (4,4), (8, 8), (32,), (16, 8), (8, 4), (16, 16)])
+            hidden_layer_grid = kwargs.get("hidden_layer_grid", [(8,), (16,), (4,4), (8, 8), (32,)])
             wf_kwargs = kwargs.get(
                 "walk_forward_kwargs", {
                 "min_train_size": 50,

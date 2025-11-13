@@ -10,6 +10,8 @@ import pandas as pd
 import numpy as np
 import inspect
 
+import pytz
+
 if TYPE_CHECKING:
     from .manager import DataManager
 
@@ -63,21 +65,137 @@ class Transformer:
         setattr(self, name, func.__get__(self))
         return None
 
+    @staticmethod
+    def get_underlying(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """
+        Adds the underlying Yahoo Finance close price to each row in an options chain DataFrame.
+        Does NOT modify the type or index of trade_date.
+        """
+
+        import pandas as pd
+        import yfinance as yf
+
+        try:
+            ticker = kwargs.get("tick", "")
+            if not ticker:
+                raise ValueError("Missing required argument: 'tick' (underlying symbol)")
+
+            # Convert trade_date just for range and merge purposes
+            temp_dates = pd.to_datetime(data['trade_date'], errors='coerce')
+            min_date, max_date = temp_dates.min(), temp_dates.max()
+
+            if pd.isna(min_date) or pd.isna(max_date):
+                raise ValueError("No valid trade_date values found in input data.")
+
+            # --- Download underlying data ---
+            close_prices = yf.download(
+                ticker,
+                start=min_date - pd.Timedelta(days=2),
+                end=max_date + pd.Timedelta(days=2),
+                progress=False,
+                interval="1d"
+            )[["Close"]]
+
+            # Reset index so 'Date' becomes a column for merging
+            close_df = (
+                close_prices
+                .reset_index()
+                .rename(columns={"Date": "merge_date", "Close": "underlying_close"})
+            )
+
+            # --- Flatten MultiIndex columns if necessary ---
+            if isinstance(close_prices.columns, pd.MultiIndex):
+                close_prices.columns = ['_'.join(col).strip() for col in close_prices.columns.values]
+
+            # Now select Close column (handles 'Close' or 'Close_<TICKER>')
+            close_col = [c for c in close_prices.columns if c.lower().startswith('close')]
+            close_prices = close_prices[close_col].rename(columns={close_col[0]: 'Close'})
+            close_df = close_prices.reset_index().rename(columns={'Date': 'merge_date', 'Close': 'underlying_close'})
+
+            # Create a temporary datetime column for merging
+            data["_merge_date"] = pd.to_datetime(data["trade_date"], errors="coerce")
+            
+            # --- Merge underlying close prices ---
+            merged = pd.merge(
+                data,
+                close_df,
+                left_on="_merge_date",
+                right_on="merge_date",
+                how="left"
+            ).drop(columns=["_merge_date", "merge_date"])
+            return merged
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to get underlying data for {kwargs.get('tick', '')}: {e}")
 
     @staticmethod
-    def drop_stale_options(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+    def flag_chain_gaps(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """
+        Flags gaps in option chains and returns the list of missing dates per contract.
+        """
+
+        import pytz
+        import exchange_calendars as ec
+
+        gap_threshold: int = kwargs.get("gap_threshold", 1)
+        # Remove timezone for consistency
+        data['norm_trade_date'] = pd.to_datetime(data['trade_date']).dt.tz_localize(None)
+
+        # Get NASDAQ calendar
+        cal = ec.get_calendar("XNAS")
+        if not hasattr(cal.tz, "key"):
+            cal.tz = pytz.timezone("America/New_York")
+
+        # Prepare a list to collect results
+        results = []
+
+        # Group by contract
+        for (expiry, strike, call_put), group in data.groupby(['expiry_date', 'strike', 'call_put']):
+            # Contract-specific trade dates
+            observed = pd.to_datetime(group['norm_trade_date'].unique())
+            observed = pd.DatetimeIndex(observed)  
+            expected_sessions = cal.sessions_in_range(observed.min(), observed.max())
+            expected_sessions = pd.DatetimeIndex(expected_sessions)
+            missing_dates = list(expected_sessions.difference(observed))
+            missing_dates = list(expected_sessions.difference(observed))
+
+            results.append({
+                'expiry_date': expiry,
+                'strike': strike,
+                'call_put': call_put,
+                'missing_dates': missing_dates,
+                'missing_count': len(missing_dates),
+                'gap_flag': len(missing_dates) > gap_threshold
+            })
+
+        # Convert results to DataFrame
+        missing_df = pd.DataFrame(results)
+
+        # Merge back with original data
+        result = data.merge(
+            missing_df,
+            on=['expiry_date', 'strike', 'call_put'],
+            how='left'
+        )
+        result.drop(columns=['norm_trade_date'], inplace=True)
+
+        return result
+
+            
+    @staticmethod
+    def flag_stale_options(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Drops options that are stale (e.g., no volume or open interest)"""
         volume_threshold = kwargs.get("volume_threshold", 0)
         oi_threshold = kwargs.get("open_interest_threshold", 0)
         data = data[data.isna().sum(axis=1) == 0]
         if "volume" in data.columns:
-            data = data[data["volume"] > volume_threshold]
+            data['stale'] = data["volume"] <= volume_threshold
         if "open_interest" in data.columns:
-            data = data[data["open_interest"] > oi_threshold]
+            data['stale'] = data.get('stale', False) | (data["open_interest"] <= oi_threshold)
         if "bid_price" in data.columns:
-            data = data[data["bid_price"] > 0.01]
+            data['stale'] = data.get('stale', False) | (data["bid_price"] <= 0.01)
         if "ask_price" in data.columns:
-            data = data[data["ask_price"] > 0.01]
+            data['stale'] = data.get('stale', False) | (data["ask_price"] <= 0.01)
         return data
 
     @staticmethod
@@ -116,10 +234,24 @@ class Transformer:
                 return data
 
         for date, ratio in splits.items():
-            data.loc[
-                pd.to_datetime(data['trade_date']).dt.tz_localize('America/New_York') < pd.to_datetime(date),
-                ['strike', 'bid_price', 'ask_price', 'last_trade_price']
-            ] /= ratio
+            try:
+                split_date = pd.to_datetime(date)
+                mask = pd.to_datetime(data['trade_date']) < split_date
+                cols_to_scale = ['strike', 'bid_price', 'ask_price', 'last_trade_price']
+                cols_to_scale = [c for c in cols_to_scale if c in data.columns]
+                data.loc[mask, cols_to_scale] /= ratio
+                if 'underlying_close' in data.columns:
+                    data.loc[mask, 'underlying_close'] /= ratio
+            except Exception as e:
+                print(f"Skipping split on {date}: {e}")
+        return data
+    
+    @staticmethod
+    def drop_contract(data, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Drops a contract type"""
+        drop = kwargs.get('drop', None)
+        if drop:
+            data = data[data['call_put']!=drop.lower()]
         return data
     
     @staticmethod

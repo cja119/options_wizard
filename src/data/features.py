@@ -180,17 +180,40 @@ class Features:
         """Prepare data by filling missing values and sorting."""
         feature_names = kwargs.get('feature_names', [])
 
+        theta_available = "theta_entry" in outputs.columns
+        theta_ratio_col = "theta_log_ratio" if theta_available else None
+
         def combine_pnl(group: pd.DataFrame) -> pd.Series:
-                       
             entry_price_magnitude = group['mid_price_entry'].abs().sum()
             entry_position = (group['position'] * group['mid_price_entry']).sum()
             exit_position = (group['position'] * group['mid_price_exit']).sum()
             
-            combined_pnl = np.log((exit_position - entry_position + entry_price_magnitude) / entry_price_magnitude)
-
+            long_pnl = np.log((exit_position - entry_position + entry_price_magnitude) / entry_price_magnitude)
+            short_pnl = np.log((entry_price_magnitude - (exit_position - entry_position)) / entry_price_magnitude)
             series_dict = {
-                'combined_pnl': combined_pnl,
+                'long_pnl': long_pnl,
+                'short_pnl': short_pnl,
             }
+
+            if theta_available:
+                ratios = []
+                if isinstance(group.index, pd.MultiIndex) and "call_put_idx" in group.index.names:
+                    pair_iter = group.groupby(level="call_put_idx", group_keys=False)
+                else:
+                    pair_iter = [(None, group)]
+
+                for _, pair in pair_iter:
+                    long_theta = pair.loc[pair['position'] > 0, 'theta_entry'].dropna()
+                    short_theta = pair.loc[pair['position'] < 0, 'theta_entry'].dropna()
+                    if long_theta.empty or short_theta.empty:
+                        continue
+                    long_val = np.abs(long_theta.iloc[0])
+                    short_val = np.abs(short_theta.iloc[0])
+                    if long_val <= 0 or short_val <= 0:
+                        continue
+                    ratios.append(np.log(long_val / short_val))
+
+                series_dict[theta_ratio_col] = np.mean(ratios) if ratios else np.nan
 
             for feature_name in feature_names:
                 if feature_name in group.columns:
@@ -199,60 +222,91 @@ class Features:
 
             return pd.Series(series_dict)
         
-        outputs = outputs.dropna()
-        outputs = outputs.groupby('trade_date_idx', group_keys=False).apply(combine_pnl)
-        outputs.index.name = 'trade_date_idx'
+        required_cols = ["mid_price_entry", "mid_price_exit", "position"]
+        present_cols = [col for col in required_cols if col in outputs.columns]
+        if present_cols:
+            outputs = outputs.dropna(subset=present_cols)
+        else:
+            outputs = outputs.dropna()
 
-        return outputs
+        if outputs.empty:
+            extra_cols = feature_names.copy()
+            if theta_ratio_col:
+                extra_cols.append(theta_ratio_col)
+            empty_cols = ['short_pnl', 'long_pnl'] + extra_cols
+            empty = pd.DataFrame(columns=empty_cols)
+            empty.index.name = 'trade_date_idx'
+            return empty
+
+        aggregated = outputs.groupby('trade_date_idx', group_keys=False).apply(combine_pnl)
+        aggregated.index.name = 'trade_date_idx'
+        aggregated = aggregated.dropna()
+
+        return aggregated
 
     @staticmethod
     @dataprep
     def compute_pnl(outputs: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Prepare data by filling missing values and sorting."""
+        import numpy as np
+        import pandas as pd
+
         feature_names = kwargs.get('feature_names', [])
         initial_capital = kwargs.get('initial_capital', 1_000_000)
-        capital_per_trade = kwargs.get('capital_per_trade', .05)
+        capital_per_trade = kwargs.get('capital_per_trade', 0.05)
         size_leg = kwargs.get('size_leg', 'short')
 
+        outputs = outputs.copy()
         outputs['equity'] = np.nan
-        min_date = outputs['trade_date_idx'].min()
-        outputs.loc[outputs['trade_date_idx'] == min_date, 'equity'] = initial_capital
+        outputs['combined_pnl'] = np.nan
+
+        # Initialize
+        min_date = outputs.index.get_level_values('trade_date_idx').min()
+        outputs.loc[outputs.index.get_level_values('trade_date_idx') == min_date, 'equity'] = initial_capital
         current_equity = initial_capital
 
+        result_frame = pd.DataFrame(columns=['trade_date_idx', 'combined_pnl', 'equity'] + feature_names)
 
         for date_idx, group in outputs.groupby('trade_date_idx'):
+            # --- Determine entry value for the sizing leg ---
             if size_leg == 'short':
-                # First find the size of the short leg
-                short_size = group.loc[group['position'] < 0, 'position']
-                entry_size = group.loc[group['position'] < 0, 'mid_price_entry'] * short_size
-                short_size = (capital_per_trade * current_equity / abs(entry_size))
+                leg = group.loc[group['position'] < 0]
+            else:
+                leg = group.loc[group['position'] > 0]
 
-                # Set the rescaled short position
-                group.loc[group['position'] < 0, 'position'] = short_size
-                group.loc[group['position'] > 0, 'position'] =  group.loc[group['position'] > 0, 'position'] \
-                        * short_size.abs() / np.abs(short_size)
-            
-            elif size_leg == 'long':
-                # First find the size of the long leg
-                long_size = group.loc[group['position'] > 0, 'position']
-                entry_size = group.loc[group['position'] > 0, 'mid_price_entry'] * long_size
-                long_size = (capital_per_trade * current_equity / abs(entry_size))
-                
-                # Set the rescaled long position
-                group.loc[group['position'] > 0, 'position'] = long_size
-                group.loc[group['position'] < 0, 'position'] =  group.loc[group['position'] < 0, 'position'] \
-                        * long_size.abs() / np.abs(long_size)
+            if leg.empty:
+                continue  # skip days with missing leg
 
+            # Capital allocated to this day
+            capital_today = capital_per_trade * current_equity
 
+            # Entry value of sizing leg (should be 1 position)
+            entry_value = (abs(leg['position']) * leg['mid_price_entry']).iloc[0]
 
-            entry_position = (group['position'] * group['mid_price_entry']).sum()
-            exit_position = (group['position'] * group['mid_price_exit']).sum()
-            
-            combined_pnl = np.log((exit_position - entry_position + current_equity) / current_equity)
-            outputs.loc[outputs['trade_date_idx'] == date_idx, 'combined_pnl'] = combined_pnl
-            current_equity *= (1 + combined_pnl)
+            # Scale factor so total exposure = capital_today
+            scale = capital_today / entry_value if entry_value != 0 else 0
 
-        
-        outputs.index.name = 'trade_date_idx'
+            # Scale both long and short sides equally
+            group['position'] *= scale
 
-        return outputs
+            # --- Compute daily PnL ---
+            entry_value_total = (group['position'] * group['mid_price_entry']).sum()
+            exit_value_total = (group['position'] * group['mid_price_exit']).sum()
+
+            pnl = exit_value_total - entry_value_total
+            combined_pnl = np.log((current_equity + pnl) / current_equity)
+            current_equity += pnl
+
+            # Update outputs
+            idx_mask = outputs.index.get_level_values('trade_date_idx') == date_idx
+            outputs.loc[idx_mask, 'combined_pnl'] = combined_pnl
+            outputs.loc[idx_mask, 'equity'] = current_equity
+
+            # Collect summary row
+            row = {'trade_date_idx': date_idx, 'combined_pnl': combined_pnl, 'equity': current_equity}
+            for feature_name in feature_names:
+                row[feature_name] = group[feature_name].mean() if feature_name in group.columns else np.nan
+            result_frame = pd.concat([result_frame, pd.DataFrame([row])], ignore_index=True)
+
+        result_frame.set_index('trade_date_idx', inplace=True)
+        return result_frame.dropna()

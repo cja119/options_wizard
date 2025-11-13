@@ -205,7 +205,7 @@ class DataManager:
             }
             for f in as_completed(futures):
                 tick, output, data, model_params = f.result()
-                if output.empty:
+                if output.empty and isinstance(data, Exception):
                     print(f"Analysis crashed for {tick}, reattempting, reason: {data}")
                     failed.append(tick)
                 else:
@@ -223,7 +223,7 @@ class DataManager:
             }
             for f in as_completed(futures):
                 tick, output, data, model_params = f.result()
-                if output.empty:
+                if output.empty and isinstance(data, Exception):
                     print(f"Analysis crashed twice for {tick}, removing from Universe. Reason {data}")
                     self.universe.ticks.remove(tick)
                 else:

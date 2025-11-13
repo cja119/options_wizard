@@ -25,4 +25,5 @@ dependencies = [
   "python-dotenv==1.1.1",
   "yfinance==0.2.66",
   "scipy==1.16.2",
+  "exchange_calendars==4.11.3"
 ]

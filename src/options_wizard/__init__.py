@@ -2,11 +2,12 @@ from data import (
     DataManager,
     Features,
     Strategy,
-    Transformer
+    Transformer,
+    Backtest
 )
 import model
 from universe import Universe
-import backtest
+
 
 __all__ = [
     "DataManager",
@@ -16,5 +17,5 @@ __all__ = [
     "model",
     "strategies",
     "Universe",
-    "backtest"
+    "Backtest"
 ]

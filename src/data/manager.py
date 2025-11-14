@@ -34,24 +34,24 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
         model_params = {}
         for kwargs, method in methods:
             kwargs['tick'] = tick
-            if  hasattr(method, '_is_dataprep'):
-                outputs = method(outputs, **kwargs)
-            else:
-                if kwargs.get('_source') == 'Transformer':
-                    result = method(data, **kwargs)
-                    data = result
-                if kwargs.get('_source') == 'Features':
-                    result = method(data, **kwargs)
-                    if first:
-                        outputs = result
-                        first = False
-                    else:
-                        outputs = pd.concat([outputs, result], axis=1)
-                if kwargs.get('_source') == 'Model':
-                    name, params, result = method(outputs, **kwargs)
-                    model_params[name] = params
-                    outputs = pd.concat([outputs, result], axis=1)
-                del result
+            if kwargs.get('_source') == 'Transformer':
+                result = method(data, **kwargs)
+                data = result
+            if kwargs.get('_source') == 'Features':
+                result = method(data, **kwargs)
+                if first:
+                    outputs = result
+                    first = False
+                else:
+                    outputs = pd.concat([outputs, result], axis=1, join="inner")
+            if kwargs.get('_source') == 'Model':
+                name, params, result = method(outputs, **kwargs)
+                model_params[name] = params
+                outputs = pd.concat([outputs, result], axis=1, join="inner")
+            if kwargs.get('_source') == 'Backtest':
+                result = method(outputs, data, **kwargs)
+                outputs = result
+            del result
         return tick, outputs, data, model_params
     except Exception as e:
         return tick, pd.DataFrame(), e, {}
@@ -150,24 +150,28 @@ class DataManager:
                     executor.submit(_run_single_method, tick, method, kwargs, self.outputs, self.model_params): tick
                     for tick in ticks
                 }
+            elif kwargs.get('_source') == 'Backtest':
+                futures = {
+                    executor.submit(_run_single_method, tick, method, kwargs, self.outputs, self.data): tick
+                    for tick in ticks
+                }
 
             for f in as_completed(futures):
                 tick, output = f.result()
-                if method.__name__ == 'prepare_data':
+                if kwargs.get('_source') == 'Transformer':
+                    self.data[tick] = output
+                if kwargs.get('_source') == 'Features':
+                    if self.outputs.get(tick) is None:
+                        self.outputs[tick] = output
+                    else:
+                        self.outputs[tick] = pd.concat([self.outputs[tick], output], axis=1)
+                if kwargs.get('_source') == 'Model':
+                    name, model_param = output
+                    if tick not in self.model_params:
+                        self.model_params[tick] = {}
+                    self.model_params[tick][name] = model_param
+                if kwargs.get('_source') == 'Backtest':
                     self.outputs[tick] = output
-                else:
-                    if kwargs.get('_source') == 'Transformer':
-                        self.data[tick] = output
-                    if kwargs.get('_source') == 'Features':
-                        if self.outputs.get(tick) is None:
-                            self.outputs[tick] = output
-                        else:
-                            self.outputs[tick] = pd.concat([self.outputs[tick], output], axis=1)
-                    if kwargs.get('_source') == 'Model':
-                        name, model_param = output
-                        if tick not in self.model_params:
-                            self.model_params[tick] = {}
-                        self.model_params[tick][name] = model_param
         return None
 
     def test_pipeline(self, tick: str) -> pd.DataFrame:
@@ -216,7 +220,7 @@ class DataManager:
                     if save_data:
                         self.save_parquet(tick=tick, data=save_data)
 
-        with ProcessPoolExecutor(max_workers=n_workers//2) as executor:
+        with ProcessPoolExecutor(max_workers=-((-n_workers)//2)) as executor:
             futures = {
                 executor.submit(_run_pipeline_for_tick, tick, methods, self._load_data): tick
                 for tick, methods in self._method_pipeline.items() if tick in failed

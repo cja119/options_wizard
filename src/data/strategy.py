@@ -97,6 +97,7 @@ class Strategy:
             (data["call_put"] == call_put)
             & (data["ttm"].between(entry_ttm - ttm_tol, entry_ttm + ttm_tol))
             & (data["abs_delta"].between(delta_otm, delta_ntm))
+            & (data['days_until_last_trade'] > hold_period)
         ]
 
         if filtered_df.empty:
@@ -260,14 +261,27 @@ class Strategy:
         delta_atm = kwargs.get('delta_atm', 0.45)
         delta_otm = kwargs.get('delta_otm', 0.15)
         otm_ratio = kwargs.get('otm_ratio', 2)
+        hold_period = kwargs.get('hold_period', 30)
         call_put = kwargs.get('call_put', 'p')
 
         data['entered'] = False
         data['position'] = 0
 
         def pick_daily_contracts(day_chain, **kwargs) -> pd.DataFrame:
-            ttm_filter = (day_chain['ttm'] >= lower_ttm) & (day_chain['ttm'] <= upper_ttm) & (day_chain['call_put'] == call_put)
-            atm_candidates = day_chain.loc[ttm_filter]
+            direction = (
+                day_chain['strike'] < day_chain['underlying_close']
+                if call_put == 'p'
+                else day_chain['strike'] > day_chain['underlying_close']
+            )
+
+            fitler = (
+                direction &
+                (day_chain['delta'].abs() <= delta_atm) &
+                day_chain['ttm'].between(lower_ttm, upper_ttm) &
+                (day_chain['call_put'] == call_put) &
+                (day_chain['days_until_last_trade'] > hold_period)
+            )
+            atm_candidates = day_chain.loc[fitler]
             
             if atm_candidates.empty:
                 return day_chain
@@ -276,7 +290,7 @@ class Strategy:
                 (atm_candidates['delta'].abs() - delta_atm).abs().argsort()[:1]
             ]
             
-            otm_candidates = day_chain.loc[ttm_filter & (day_chain['delta'].abs() > delta_otm)]
+            otm_candidates = day_chain.loc[fitler & (day_chain['delta'].abs() > delta_otm)]
             
             if otm_candidates.empty:
                 return day_chain
@@ -299,6 +313,11 @@ class Strategy:
             .drop(columns=['entered'])
             .reset_index(level='trade_date', drop=True)
         )
+        # Add these two lines before assigning back into data:
+        processed_aligned = processed.droplevel(0).reindex(data.index)
+
+        data['entered'] = processed_aligned['entered']
+        data['position'] = processed_aligned['position']
 
         return result
     

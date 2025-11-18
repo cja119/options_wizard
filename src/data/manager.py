@@ -190,19 +190,21 @@ class DataManager:
     def execute_pipeline(self, retain_data: bool = False, save_data: bool = False, n_workers: int = 8) -> None:
         """Executes all stored methods in the pipeline"""
         failed = []
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            posts = {}
-            for tick, methods in self._method_pipeline.items():
-                for kwargs, method in  methods.copy():
-                    if kwargs.get('all_stocks', False):
-                        print(f"\rDeferring method {method.__name__} for all stocks", end='', flush=True)
-                        methods.remove((kwargs, method))
-                        key = (make_hashable(kwargs), method)
-                        if key in posts:
-                            posts[key].append(tick)
-                        else:
-                            posts[key] = [tick]
+        posts = {}
+        for tick, methods in self._method_pipeline.items():
+            for kwargs, method in  methods.copy():
+                if hasattr(method, '_all_stocks') and method._all_stocks:
+                    print(f"\rDeferring method {method.__name__} for all stocks", end='', flush=True)
+                    if hasattr(self.universe, "top_per_date"):
+                        kwargs['top_per_date'] = tuple(self.universe.top_per_date)
+                    methods.remove((kwargs, method))
+                    key = (make_hashable(kwargs), method)
+                    if key in posts:
+                        posts[key].append(tick)
+                    else:
+                        posts[key] = [tick]
 
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {
                 executor.submit(_run_pipeline_for_tick, tick, methods.copy(), copy.deepcopy(self._load_data)): tick
                 for tick, methods in self._method_pipeline.items() 
@@ -252,7 +254,24 @@ class DataManager:
         return None
 
     def run_method_combined(self, ticks, method, kwargs) -> None:
-        """Run a single method for multiple ticks together."""
+        source = kwargs.get('_source')
+        if source == 'Backtest':
+            top_series = kwargs.get('top_per_date')
+            if isinstance(top_series, tuple):
+                if hasattr(self.universe, 'top_per_date'):
+                    kwargs['top_per_date'] = getattr(self.universe, 'top_per_date')
+                else:
+                    top_dict = {}
+                    for item in top_series:
+                        if isinstance(item, (tuple, list)) and len(item) == 2:
+                            top_dict[pd.to_datetime(item[0])] = item[1]
+                    if top_dict:
+                        kwargs['top_per_date'] = pd.Series(top_dict).sort_index()
+            per_stock_equity = {tick: self.outputs.get(tick, pd.DataFrame()) for tick in ticks}
+            result = method(per_stock_equity, **kwargs)
+            self.combined_outputs[method.__name__] = result
+            return None
+
         name = ''
         for tick in ticks:
             self.outputs[tick]['tick'] = tick

@@ -153,8 +153,9 @@ class Features:
     @staticmethod
     def days_to_earnings(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Compute the number of days to the next earnings date."""
-        trade_dates = data['trade_date']
-        next_earnings = data['next_earnings']
+        # Ensure clean date-only values
+        trade_dates = pd.to_datetime(data['trade_date']).dt.normalize().values.astype('datetime64[D]')
+        next_earnings = pd.to_datetime(data['next_earnings']).dt.normalize().values.astype('datetime64[D]')
         mask = next_earnings.notna()
         data.loc[mask, 'bdays_to_earnings'] = np.busday_count(
                 trade_dates[mask].values.astype('datetime64[D]'),
@@ -165,8 +166,10 @@ class Features:
     @staticmethod
     def days_since_earnings(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Compute the number of days since the last earnings date."""
-        trade_dates = data['trade_date']
-        last_earnings = data['last_earnings']
+        # Ensure clean date-only values
+        trade_dates = pd.to_datetime(data['trade_date']).dt.normalize().values.astype('datetime64[D]')
+        last_earnings = pd.to_datetime(data['last_earnings']).dt.normalize().values.astype('datetime64[D]')
+
         mask = last_earnings.notna()
         data.loc[mask, 'bdays_since_earnings'] = np.busday_count(
                 last_earnings[mask].values.astype('datetime64[D]'),

@@ -97,6 +97,7 @@ class Transformer:
                 start=min_date - pd.Timedelta(days=2),
                 end=max_date + pd.Timedelta(days=2),
                 progress=False,
+                auto_adjust=False,
                 interval="1d"
             )[["Close"]]
 
@@ -194,6 +195,22 @@ class Transformer:
                 on=['expiry_date', 'strike', 'call_put']
             )
 
+        last_trade = (
+            data.groupby(['expiry_date', 'strike', 'call_put'])['norm_trade_date']
+                .max()
+                .rename("last_trade_date")
+        )
+
+        # Join back into the main result
+        result = result.join(
+            last_trade,
+            on=['expiry_date', 'strike', 'call_put']
+        )
+
+        # Calendar-day difference
+        result['days_until_last_trade'] = (
+            result['last_trade_date'] - result['norm_trade_date']
+        ).dt.days
         result.drop(columns=['norm_trade_date'], inplace=True, errors='ignore')
 
         if kwargs.get('drop_on_gap', False):
@@ -288,10 +305,13 @@ class Transformer:
         test_size = kwargs.get("test_size", 0.2)
         drop_out_of_sample = kwargs.get("drop_out_of_sample", False)
         drop_in_sample = kwargs.get("drop_in_sample", False)
+        upper_date = kwargs.get("upper_date", None)
         data = data.sort_values('trade_date')
         unique_dates = data['trade_date'].drop_duplicates().sort_values()
         split_index = int(len(unique_dates) * (1 - test_size))
         split_date = unique_dates.iloc[split_index]
+        if upper_date is not None:
+            split_date = min(split_date, pd.to_datetime(upper_date))
         if drop_out_of_sample:
             data = data[data['trade_date'] < split_date]
         elif drop_in_sample:

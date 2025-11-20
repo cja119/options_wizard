@@ -56,15 +56,32 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
     except Exception as e:
         return tick, pd.DataFrame(), e, {}
 
-def _run_single_method(tick, method, kwargs, data_dict, outputs_dict):
+def _run_single_method(tick, method, kwargs, *, data=None, outputs=None):
     """Run a single method for one tick and return updated data/output."""
+    source = kwargs.get('_source')
+
     if method.__name__ == 'prepare_data':
-        data = data_dict[tick]
-        kwargs.append({'tick': tick})
-        output = method(outputs_dict.get(tick, pd.DataFrame(index=data.index)), data, **kwargs)
-        return tick, output
-    data = data_dict[tick]
-    return tick, method(data, **kwargs)
+        base_outputs = outputs if outputs is not None else None
+        if base_outputs is None or base_outputs.empty:
+            if data is not None and getattr(data, "index", None) is not None:
+                base_outputs = pd.DataFrame(index=data.index)
+            else:
+                base_outputs = pd.DataFrame()
+        return tick, method(base_outputs, **kwargs)
+
+    if source == 'Backtest':
+        output_df = outputs if outputs is not None else pd.DataFrame()
+        data_df = data if data is not None else pd.DataFrame()
+        return tick, method(output_df, data_df, **kwargs)
+
+    if source in ['Transformer', 'Features']:
+        target = data if data is not None else pd.DataFrame()
+    elif source == 'Model':
+        target = outputs if outputs is not None else pd.DataFrame()
+    else:
+        target = data if data is not None else (outputs if outputs is not None else pd.DataFrame())
+
+    return tick, method(target, **kwargs)
 
 class SubProblemWrapper:
     def __init__(self, ticks: list[str] | str, manager: DataManager):
@@ -139,38 +156,72 @@ class DataManager:
 
     def run_method(self, ticks: list[str], method: callable, kwargs: Optional[dict]) -> None:
         """Run a single method in parallel across ticks."""
+        source = kwargs.get('_source')
         with ProcessPoolExecutor() as executor:
-            if kwargs.get('_source') in ['Transformer', 'Features']:
+            if source == 'Transformer':
                 futures = {
-                    executor.submit(_run_single_method, tick, method, kwargs, self.data, self.outputs): tick
+                    executor.submit(
+                        _run_single_method,
+                        tick,
+                        method,
+                        {**kwargs, 'tick': tick},
+                        data=self.data.get(tick),
+                    ): tick
                     for tick in ticks
                 }
-            elif kwargs.get('_source') == 'Model':
+            elif source == 'Features':
                 futures = {
-                    executor.submit(_run_single_method, tick, method, kwargs, self.outputs, self.model_params): tick
+                    executor.submit(
+                        _run_single_method,
+                        tick,
+                        method,
+                        {**kwargs, 'tick': tick},
+                        data=self.data.get(tick),
+                        outputs=self.outputs.get(tick),
+                    ): tick
                     for tick in ticks
                 }
-            elif kwargs.get('_source') == 'Backtest':
+            elif source == 'Model':
                 futures = {
-                    executor.submit(_run_single_method, tick, method, kwargs, self.outputs, self.data): tick
+                    executor.submit(
+                        _run_single_method,
+                        tick,
+                        method,
+                        {**kwargs, 'tick': tick},
+                        outputs=self.outputs.get(tick),
+                    ): tick
                     for tick in ticks
                 }
+            elif source == 'Backtest':
+                futures = {
+                    executor.submit(
+                        _run_single_method,
+                        tick,
+                        method,
+                        {**kwargs, 'tick': tick},
+                        data=self.data.get(tick),
+                        outputs=self.outputs.get(tick),
+                    ): tick
+                    for tick in ticks
+                }
+            else:
+                raise ValueError(f"Unknown method source '{source}'")
 
             for f in as_completed(futures):
                 tick, output = f.result()
-                if kwargs.get('_source') == 'Transformer':
+                if source == 'Transformer':
                     self.data[tick] = output
-                if kwargs.get('_source') == 'Features':
+                if source == 'Features':
                     if self.outputs.get(tick) is None:
                         self.outputs[tick] = output
                     else:
                         self.outputs[tick] = pd.concat([self.outputs[tick], output], axis=1)
-                if kwargs.get('_source') == 'Model':
+                if source == 'Model':
                     name, model_param = output
                     if tick not in self.model_params:
                         self.model_params[tick] = {}
                     self.model_params[tick][name] = model_param
-                if kwargs.get('_source') == 'Backtest':
+                if source == 'Backtest':
                     self.outputs[tick] = output
         return None
 
@@ -242,14 +293,14 @@ class DataManager:
 
         for (kwargs_items, method), ticks in posts.items():
             kwargs = dict(kwargs_items)
-            for tick in ticks:
-                if tick not in self.universe.ticks:
-                    ticks.remove(tick)
+            filtered_ticks = [tick for tick in ticks if tick in self.universe.ticks]
+            if not filtered_ticks:
+                continue
             for key, value in kwargs.items():
                 if isinstance(value, tuple):
                     kwargs[key] = list(value)
-            print(f"Running post-processing method {method.__name__} for ticks {ticks}")
-            self.run_method_combined(ticks, method, kwargs)
+            print(f"Running post-processing method {method.__name__} for ticks {filtered_ticks}")
+            self.run_method_combined(filtered_ticks, method, kwargs)
 
         return None
 

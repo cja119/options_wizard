@@ -14,7 +14,7 @@ import exchange_calendars as ec
 
 
 ContractKey = tuple[pd.Timestamp, int, float]
-PositionKey = tuple[pd.Timestamp, int, float, pd.Timestamp]
+PositionKey = tuple[pd.Timestamp, int, float, pd.Timestamp, int | str | None]
 
 
 def _naive_timestamp(ts: pd.Timestamp | str) -> pd.Timestamp:
@@ -25,6 +25,26 @@ def _naive_timestamp(ts: pd.Timestamp | str) -> pd.Timestamp:
     except TypeError:
         # Already tz-naive
         return ts
+
+
+def _normalise_entry_id(entry_id) -> int | str | None:
+    """Convert raw trade identifiers to stable hashable values."""
+    if entry_id is None:
+        return None
+    try:
+        if pd.isna(entry_id):
+            return None
+    except TypeError:
+        # Non-numeric types like str will raise here; keep as-is.
+        pass
+    if isinstance(entry_id, float):
+        if np.isnan(entry_id):
+            return None
+        if entry_id.is_integer():
+            return int(entry_id)
+    if isinstance(entry_id, (np.integer, int)):
+        return int(entry_id)
+    return entry_id
 
 
 @dataclass
@@ -40,7 +60,9 @@ class TradedContract:
     delta: float
     theta: float
     vega: float
+    underlying_close: float | None = None
     has_price_today: bool = True
+    trade_date_idx: int | str | None = None
 
     @property
     def key(self) -> ContractKey:
@@ -49,11 +71,13 @@ class TradedContract:
     @property
     def position_key(self) -> PositionKey:
         """Unique identifier for a trade, including its entry date."""
+        entry_id = _normalise_entry_id(self.trade_date_idx)
         return (
             self.expiry_date_idx,
             self.call_put_idx,
             self.strike_idx,
             _naive_timestamp(self.entry_date),
+            entry_id,
         )
 
     @property
@@ -90,6 +114,14 @@ class Spread:
             leg.delta = float(values["delta"])
             leg.theta = float(values["theta"])
             leg.vega = float(values["vega"])
+            underlying_px = values.get("underlying_close", leg.underlying_close)
+            if underlying_px is None or pd.isna(underlying_px):
+                leg.underlying_close = np.nan
+            else:
+                try:
+                    leg.underlying_close = float(underlying_px)
+                except (TypeError, ValueError):
+                    leg.underlying_close = np.nan
             leg.has_price_today = True
 
 
@@ -235,11 +267,20 @@ def _build_spread(
     size_multiplier: float,
     entry_date: pd.Timestamp,
     exit_date: pd.Timestamp,
+    entry_id: int | None = None,
 ) -> Spread:
     short_legs: list[TradedContract] = []
     long_legs: list[TradedContract] = []
 
     for _, row in entry_group.iterrows():
+        underlying_px = row.get("underlying_close")
+        if underlying_px is None or pd.isna(underlying_px):
+            underlying_px_val = np.nan
+        else:
+            try:
+                underlying_px_val = float(underlying_px)
+            except (TypeError, ValueError):
+                underlying_px_val = np.nan
         leg = TradedContract(
             expiry_date_idx=row["expiry_date_idx"],
             call_put_idx=row["call_put_idx"],
@@ -252,6 +293,8 @@ def _build_spread(
             delta=float(row["delta"]),
             theta=float(row["theta"]),
             vega=float(row["vega"]),
+            underlying_close=underlying_px_val,
+            trade_date_idx=_normalise_entry_id(entry_id),
         )
         if row["position"] < 0:
             short_legs.append(leg)
@@ -288,6 +331,7 @@ def _prep_trade_frames(
     filtered_data["norm_trade_date"] = _normalise_dates(filtered_data, "trade_date")
 
     trade_entries = trade_entries.sort_values("trade_date_idx")
+    filtered_data = filtered_data.sort_values("norm_trade_date").set_index("norm_trade_date", drop=False)
     return trade_entries, filtered_data
 
 
@@ -296,14 +340,19 @@ def _price_lookup_for_date(
     current_date_naive: pd.Timestamp,
     keys: list[str],
 ) -> dict[ContractKey, dict[str, float]]:
-    todays_prices = filtered_data.loc[
-        filtered_data["norm_trade_date"] == current_date_naive,
-        keys + ["mid_price", "delta", "theta", "vega"],
-    ]
-    if todays_prices.empty:
+    base_price_cols = ["mid_price", "delta", "theta", "vega"]
+    optional_cols = [col for col in ["underlying_close"] if col in filtered_data.columns]
+    lookup_cols = keys + base_price_cols + optional_cols
+    try:
+        todays_prices = filtered_data.loc[
+            [current_date_naive],
+            lookup_cols,
+        ]
+    except KeyError:
         return {}
 
     price_frame = todays_prices.set_index(keys)
+    has_underlying_close = "underlying_close" in price_frame.columns
     lookup: dict[ContractKey, dict[str, float]] = {}
     for idx, row in price_frame.iterrows():
         lookup[idx] = {
@@ -312,6 +361,15 @@ def _price_lookup_for_date(
             "theta": float(row["theta"]),
             "vega": float(row["vega"]),
         }
+        if has_underlying_close:
+            value = row["underlying_close"]
+            if value is None or pd.isna(value):
+                lookup[idx]["underlying_close"] = np.nan
+            else:
+                try:
+                    lookup[idx]["underlying_close"] = float(value)
+                except (TypeError, ValueError):
+                    lookup[idx]["underlying_close"] = np.nan
     return lookup
 
 
@@ -360,16 +418,23 @@ def main(
 
         todays_entries = trades_df[trades_df["norm_trade_date"] == current_date_naive]
         if not todays_entries.empty:
-            for _, entry_group in todays_entries.groupby("trade_date_idx"):
+            for trade_date_idx, entry_group in todays_entries.groupby("trade_date_idx"):
                 size_multiplier = sizing_fn(portfolio, entry_group)
                 if size_multiplier <= 0:
                     continue
 
                 entry_date = entry_group["trade_date"].iloc[0]
                 exit_date = entry_date + hold_td
-                spread = _build_spread(entry_group, size_multiplier, entry_date, exit_date)
+                entry_identifier = _normalise_entry_id(trade_date_idx)
+                spread = _build_spread(
+                    entry_group,
+                    size_multiplier,
+                    entry_date,
+                    exit_date,
+                    entry_id=entry_identifier,
+                )
                 net_cost = spread.market_value
-                if np.isnan(net_cost) or net_cost == 0.0:
+                if np.isnan(net_cost):
                     continue
 
                 portfolio.cash -= net_cost
@@ -414,6 +479,8 @@ def combine_multi_equity(
     capital_allocation: CapitalAllocationFn | None = None,
     entry_cost_size: str = "short",
     top_per_date: Mapping[pd.Timestamp, list[str]] | pd.Series | None = None,
+    fixed_notional_exposure: float | None = None,
+    entry_notional: bool = False,
 ) -> pd.DataFrame:
     """
     Combine per-stock equity curves into a single multi-equity portfolio.
@@ -431,11 +498,36 @@ def combine_multi_equity(
     top_per_date:
         Optional mapping/Series of index constituents by date. When provided, only those ticks
         present in the latest available constituent list (as of each date) are traded.
+    fixed_notional_exposure:
+        When provided, overrides percentage-based sizing and instead targets this absolute
+        notional exposure (based on ``allocation_basis``/``entry_cost_size``) across the
+        combined portfolio.
+    entry_notional:
+        When True alongside ``fixed_notional_exposure``, target the specified notional for
+        the new entries on each day (without offsetting currently held exposure).
     """
     if not per_stock_equity:
-        return pd.DataFrame(columns=["equity", "equity_obj", "daily_log_return"])
+        return pd.DataFrame(
+            columns=[
+                "equity",
+                "equity_obj",
+                "daily_log_return",
+                "allocation_underlying_value",
+                "stocks_entered",
+            ]
+        )
 
     allocation_fn = capital_allocation or _default_capital_allocation
+    if fixed_notional_exposure is not None:
+        try:
+            target_notional = float(fixed_notional_exposure)
+        except (TypeError, ValueError):
+            target_notional = None
+    else:
+        target_notional = None
+    if target_notional is not None and target_notional <= 0:
+        target_notional = None
+    entry_notional_flag = bool(entry_notional)
 
     if top_per_date is not None:
         if isinstance(top_per_date, pd.Series):
@@ -462,7 +554,15 @@ def combine_multi_equity(
     )
 
     if not all_dates:
-        return pd.DataFrame(columns=["equity", "equity_obj", "daily_log_return"])
+        return pd.DataFrame(
+            columns=[
+                "equity",
+                "equity_obj",
+                "daily_log_return",
+                "allocation_underlying_value",
+                "stocks_entered",
+            ]
+        )
 
     def _notional_for_contracts(contracts: list[TradedContract]) -> float:
         long_cost = sum(abs(c.base_position) * c.last_price for c in contracts if c.base_position > 0)
@@ -486,6 +586,41 @@ def combine_multi_equity(
             return short_cost
         raise ValueError(f"Unknown entry_cost_size '{entry_cost_size}'")
 
+    def _underlying_allocation_value(contracts: list[TradedContract], *, use_base: bool = False) -> float:
+        long_value = 0.0
+        short_value = 0.0
+        for contract in contracts:
+            if use_base:
+                reference = contract.base_position if contract.base_position != 0 else contract.scaled_position
+            else:
+                reference = contract.scaled_position
+            try:
+                position_value = float(reference)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(position_value) or position_value == 0:
+                continue
+            price_value = contract.underlying_close
+            try:
+                underlying_px = float(price_value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(underlying_px):
+                continue
+            exposure = abs(position_value) * float(underlying_px)
+            if position_value > 0:
+                long_value += exposure
+            else:
+                short_value += exposure
+
+        if entry_cost_size == "long":
+            return long_value
+        if entry_cost_size == "diff":
+            return long_value - short_value
+        if entry_cost_size == "short":
+            return short_value
+        raise ValueError(f"Unknown entry_cost_size '{entry_cost_size}'")
+
     holdings: dict[str, dict[PositionKey, TradedContract]] = {tick: {} for tick in per_stock_equity.keys()}
     combined_rows: list[dict[str, object]] = []
     portfolio_cash = initial_capital
@@ -500,6 +635,7 @@ def combine_multi_equity(
         if not active_ticks:
             active_ticks = list(per_stock_equity.keys())
         new_entries: dict[str, list[tuple[PositionKey, TradedContract]]] = defaultdict(list)
+        entered_ticks_today: set[str] = set()
 
         for tick, df in per_stock_equity.items():
             state = holdings.setdefault(tick, {})
@@ -542,47 +678,99 @@ def combine_multi_equity(
                 if key not in state:
                     new_entries[tick].append((key, contract))
 
+        current_contracts_before = [contract for tick_state in holdings.values() for contract in tick_state.values()]
         positions_value_before = sum(
             contract.market_value for tick_state in holdings.values() for contract in tick_state.values()
         )
         equity_before = portfolio_cash + positions_value_before
+        current_underlying_notional = _underlying_allocation_value(current_contracts_before)
+        notional_room = None
+        if target_notional is not None:
+            if entry_notional_flag:
+                notional_room = target_notional
+            else:
+                notional_room = max(target_notional - current_underlying_notional, 0.0)
 
         entering_ticks = [tick for tick, contracts in new_entries.items() if contracts]
-        if entering_ticks and active_ticks and equity_before > 0:
-            allocation_inputs = {tick: 0.0 for tick in active_ticks}
-            for tick in entering_ticks:
-                allocation_inputs[tick] = _notional_for_contracts([contract for _, contract in new_entries[tick]])
+        if entering_ticks:
+            allocation_inputs = {
+                tick: _notional_for_contracts([contract for _, contract in new_entries[tick]])
+                for tick in entering_ticks
+            }
             weights = allocation_fn(date, allocation_inputs)
-            weights = {tick: weights.get(tick, 0.0) for tick in active_ticks}
+            weights = {tick: weights.get(tick, 0.0) for tick in entering_ticks}
             positive_sum = sum(weight for weight in weights.values() if weight > 0)
             if positive_sum <= 0:
-                equal_weight = 1.0 / len(active_ticks)
-                weights = {tick: equal_weight for tick in active_ticks}
+                equal_weight = 1.0 / len(entering_ticks)
+                weights = {tick: equal_weight for tick in entering_ticks}
             else:
                 weights = {
                     tick: (weight / positive_sum) if weight > 0 else 0.0 for tick, weight in weights.items()
                 }
 
-            for tick in entering_ticks:
-                weight = weights.get(tick, 0.0)
-                if weight <= 0:
-                    continue
-                capital_fraction = capital_per_trade * weight
-                if capital_fraction <= 0:
-                    continue
-                denom = _sizing_denominator([contract for _, contract in new_entries[tick]])
-                if denom <= 0 or np.isnan(denom):
-                    continue
-                size_multiplier = (capital_fraction * equity_before) / denom
-                if size_multiplier <= 0 or np.isnan(size_multiplier):
-                    continue
-                state = holdings.setdefault(tick, {})
-                for key, contract in new_entries[tick]:
-                    scaled_contract = copy.copy(contract)
-                    base = contract.base_position if contract.base_position != 0 else contract.scaled_position
-                    scaled_contract.scaled_position = base * size_multiplier
-                    state[key] = scaled_contract
-                    portfolio_cash -= scaled_contract.market_value
+            if target_notional is None:
+                if equity_before > 0:
+                    for tick in entering_ticks:
+                        weight = weights.get(tick, 0.0)
+                        if weight <= 0:
+                            continue
+                        capital_fraction = capital_per_trade * weight
+                        if capital_fraction <= 0:
+                            continue
+                        denom = _sizing_denominator([contract for _, contract in new_entries[tick]])
+                        if denom <= 0 or np.isnan(denom):
+                            continue
+                        size_multiplier = (capital_fraction * equity_before) / denom
+                        if size_multiplier <= 0 or np.isnan(size_multiplier):
+                            continue
+                        state = holdings.setdefault(tick, {})
+                        executed = False
+                        for key, contract in new_entries[tick]:
+                            scaled_contract = copy.copy(contract)
+                            base = (
+                                contract.base_position
+                                if contract.base_position != 0
+                                else contract.scaled_position
+                            )
+                            scaled_contract.scaled_position = base * size_multiplier
+                            state[key] = scaled_contract
+                            portfolio_cash -= scaled_contract.market_value
+                            executed = True
+                        if executed:
+                            entered_ticks_today.add(tick)
+            else:
+                if notional_room is not None and notional_room > 0:
+                    for tick in entering_ticks:
+                        weight = weights.get(tick, 0.0)
+                        if weight <= 0:
+                            continue
+                        per_tick_notional = notional_room * weight
+                        if per_tick_notional <= 0:
+                            continue
+                        denom = _underlying_allocation_value(
+                            [contract for _, contract in new_entries[tick]],
+                            use_base=True,
+                        )
+                        if denom <= 0 or np.isnan(denom):
+                            continue
+                        size_multiplier = per_tick_notional / denom
+                        if size_multiplier <= 0 or np.isnan(size_multiplier):
+                            continue
+                        state = holdings.setdefault(tick, {})
+                        executed = False
+                        for key, contract in new_entries[tick]:
+                            scaled_contract = copy.copy(contract)
+                            base = (
+                                contract.base_position
+                                if contract.base_position != 0
+                                else contract.scaled_position
+                            )
+                            scaled_contract.scaled_position = base * size_multiplier
+                            state[key] = scaled_contract
+                            portfolio_cash -= scaled_contract.market_value
+                            executed = True
+                        if executed:
+                            entered_ticks_today.add(tick)
 
         combined_contracts: list[TradedContract] = []
         per_tick_scaled: dict[str, SubStrategy] = {}
@@ -598,7 +786,9 @@ def combine_multi_equity(
             combined_contracts.extend(tick_contracts)
 
         positions_value = sum(contract.market_value for contract in combined_contracts)
+        allocation_underlying_value = _underlying_allocation_value(combined_contracts)
         current_equity = portfolio_cash + positions_value
+        stocks_entered_count = len(entered_ticks_today)
         combined_snapshot = SubStrategy(
             date=date,
             active_contracts=combined_contracts,
@@ -616,6 +806,8 @@ def combine_multi_equity(
                 "equity": current_equity,
                 "equity_obj": combined_snapshot,
                 "multi_snapshot": multi_snapshot,
+                "allocation_underlying_value": allocation_underlying_value,
+                "stocks_entered": stocks_entered_count,
                 "daily_log_return": daily_log_return,
             }
         )

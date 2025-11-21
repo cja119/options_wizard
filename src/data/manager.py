@@ -31,6 +31,7 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
     try:
         data = data_loader(tick, return_data=True)
         first = True
+        outputs = None
         model_params = {}
         for kwargs, method in methods:
             kwargs['tick'] = tick
@@ -45,13 +46,19 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
                 else:
                     outputs = pd.concat([outputs, result], axis=1, join="inner")
             if kwargs.get('_source') == 'Model':
+                if outputs is None:
+                    raise ValueError("Model stage requires prior feature outputs, but none were produced.")
                 name, params, result = method(outputs, **kwargs)
                 model_params[name] = params
                 outputs = pd.concat([outputs, result], axis=1, join="inner")
             if kwargs.get('_source') == 'Backtest':
+                if outputs is None:
+                    raise ValueError("Backtest stage requires prior feature outputs, but none were produced.")
                 result = method(outputs, data, **kwargs)
                 outputs = result
             del result
+        if outputs is None:
+            outputs = pd.DataFrame()
         return tick, outputs, data, model_params
     except Exception as e:
         return tick, pd.DataFrame(), e, {}

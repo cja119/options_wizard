@@ -157,16 +157,23 @@ class Backtest:
 
     @staticmethod
     def multi_day_entry(trade_entries, data, **kwargs) -> pd.DataFrame:
+        allocation_basis = kwargs.get('allocation_basis')
+        if allocation_basis is None:
+            allocation_basis = kwargs.get('entry_cost_size', 'short')
+        fixed_notional_exposure = kwargs.get('fixed_notional_exposure')
+        entry_notional = bool(kwargs.get('entry_notional', False))
         return backtest_engine.main(
             trade_entries,
             data,
             hold_period=kwargs.get('hold_period', 30),
             initial_capital=float(kwargs.get('initial_capital', 100000.0)),
             capital_per_trade=float(kwargs.get('capital_per_trade', 0.05)),
-            entry_cost_size=kwargs.get('entry_cost_size', 'short'),
+            entry_cost_size=allocation_basis,
             sizing_fn=kwargs.get('sizing_fn'),
             exit_fn=kwargs.get('exit_fn'),
             calendar=kwargs.get('calendar', 'XNAS'),
+            fixed_notional_exposure=None if fixed_notional_exposure is None else float(fixed_notional_exposure),
+            entry_notional=entry_notional,
         )
 
     @staticmethod
@@ -333,7 +340,14 @@ class Backtest:
         if allocation_basis is None:
             allocation_basis = kwargs.get('entry_cost_size', 'short')
         fixed_notional_exposure = kwargs.get('fixed_notional_exposure')
-        entry_notional = bool(kwargs.get('entry_notional', False))
+        entry_notional_param = kwargs.get('entry_notional', False)
+        entry_notional = entry_notional_param if isinstance(entry_notional_param, str) else bool(entry_notional_param)
+        fixed_notional_value = None
+        if fixed_notional_exposure is not None:
+            try:
+                fixed_notional_value = float(fixed_notional_exposure)
+            except (TypeError, ValueError):
+                fixed_notional_value = None
         return backtest_engine.combine_multi_equity(
             per_stock_equity,
             initial_capital=float(kwargs.get('initial_capital', 100_000.0)),
@@ -341,7 +355,7 @@ class Backtest:
             capital_allocation=kwargs.get('capital_allocation'),
             entry_cost_size=allocation_basis,
             top_per_date=kwargs.get('top_per_date'),
-            fixed_notional_exposure=None if fixed_notional_exposure is None else float(fixed_notional_exposure),
+            fixed_notional_exposure=fixed_notional_value,
             entry_notional=entry_notional,
         )
 

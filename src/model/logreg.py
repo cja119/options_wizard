@@ -48,6 +48,7 @@ class LogisticRegression(BaseModel):
 
         y = outputs[y_col].apply(lambda x: 1 if x >= threshold else 0).to_numpy()
         X_df = outputs[X_cols].copy()
+        X_df = X_df.loc[:, ~X_df.columns.duplicated()]
 
         if fixed_effect_col and fixed_effect_col in outputs.columns:
             dummies = pd.get_dummies(outputs[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
@@ -87,6 +88,7 @@ class LogisticRegression(BaseModel):
         fixed_effect_col = kwargs.get("diff_ticks") or params.get("fixed_effect_col")
 
         X_pred = X.copy()
+        X_pred = X_pred.loc[:, ~X_pred.columns.duplicated()]
         if fixed_effect_col and fixed_effect_col in X_pred.columns:
             dummies = pd.get_dummies(X_pred[fixed_effect_col], prefix=fixed_effect_col, drop_first=True)
             dummies = dummies.reindex(columns=params.get("fixed_effect_columns", []), fill_value=0)

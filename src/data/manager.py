@@ -3,16 +3,17 @@ Data manager class, to access data via SQL
 """
 
 from __future__ import annotations
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Optional
-from pathlib import Path; import os
+from collections.abc import Mapping
+from pathlib import Path
+import os
 from dotenv import load_dotenv
-import copy
+from functools import partial
+import pickle
 
 import pandas as pd
 import json
-
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 if TYPE_CHECKING:
     from ..universe import Universe
@@ -26,8 +27,16 @@ def make_hashable(obj):
         return tuple(sorted(make_hashable(i) for i in obj))
     else:
         return obj
-    
-def _run_pipeline_for_tick(tick, methods, data_loader):
+
+def _load_data_for_tick(tick, *, tick_path: str, return_data: bool = False) -> pd.DataFrame:
+    """Lightweight tick loader usable across processes without copying manager state."""
+    tick_file = Path(tick_path) / f"{tick}.parquet"
+    data = pd.read_parquet(tick_file)
+    cleaned = data.loc[:, ~data.columns.duplicated()]
+    return cleaned if return_data else None
+
+def _run_pipeline_for_tick(tick, methods, data_loader, return_data_to_parent: bool):
+    """Run full pipeline for a single tick. Only return raw data when requested."""
     try:
         data = data_loader(tick, return_data=True)
         first = True
@@ -40,6 +49,18 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
                 data = result
             if kwargs.get('_source') == 'Features':
                 result = method(data, **kwargs)
+                # Keep computed features available on the raw data for downstream
+                # strategy/backtest steps that read from `data` (e.g. compress_trades_day).
+                if not getattr(method, "_is_dataprep", False) and result is not None:
+                    result_df = result.to_frame(name=result.name) if isinstance(result, pd.Series) else result
+                    if len(result_df) == len(data):
+                        try:
+                            data = data.join(result_df, how="left")
+                        except Exception:
+                            try:
+                                data = pd.concat([data, result_df], axis=1)
+                            except Exception:
+                                pass
                 if first:
                     outputs = result
                     first = False
@@ -59,7 +80,38 @@ def _run_pipeline_for_tick(tick, methods, data_loader):
             del result
         if outputs is None:
             outputs = pd.DataFrame()
-        return tick, outputs, data, model_params
+        data_to_return = data if return_data_to_parent else None
+
+        # --- Pickle probe to catch non-serialisable objects early ---
+        def _find_unpickleable(label, obj):
+            try:
+                pickle.dumps(obj)
+                return None
+            except Exception as e:
+                return (label, e, type(obj))
+
+        problem = (
+            _find_unpickleable("outputs", outputs)
+            or _find_unpickleable("data", data_to_return)
+            or _find_unpickleable("model_params", model_params)
+        )
+        if problem:
+            label, err, typ = problem
+            print(f"[pickle-debug] {tick} -> {label} failed: {typ}: {err}")
+            if label == "outputs" and isinstance(outputs, pd.DataFrame):
+                for col in outputs.columns:
+                    try:
+                        pickle.dumps(outputs[col])
+                    except Exception as sub:
+                        try:
+                            bad_types = outputs[col].map(type).value_counts().head(5)
+                        except Exception:
+                            bad_types = "unable to inspect"
+                        print(f"[pickle-debug] column {col} failed: {sub}; types: {bad_types}")
+                        break
+            raise problem[1]
+
+        return tick, outputs, data_to_return, model_params
     except Exception as e:
         return tick, pd.DataFrame(), e, {}
 
@@ -130,14 +182,14 @@ class DataManager:
         if isinstance(ticks, str): ticks = [ticks]
 
         tick_path = os.getenv("TICK_PATH", "")
+        loader = partial(_load_data_for_tick, tick_path=tick_path)
 
         for tick in ticks:
-            tick_file = tick_path + f"/{tick}.parquet"
-            data = pd.read_parquet(tick_file)
-            if return_data:        
-                return data.loc[:, ~data.columns.duplicated()]
+            data = loader(tick, return_data=True)
+            if return_data:
+                return data
             else:
-                self.data[tick] = data.loc[:, ~data.columns.duplicated()]
+                self.data[tick] = data
         return None
 
     def __getitem__(self, ticks: list[str] | str):
@@ -262,9 +314,20 @@ class DataManager:
                     else:
                         posts[key] = [tick]
 
+        load_dotenv()
+        tick_path = os.getenv("TICK_PATH", "")
+        data_loader = partial(_load_data_for_tick, tick_path=tick_path)
+        return_data_to_parent = retain_data or save_data
+
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {
-                executor.submit(_run_pipeline_for_tick, tick, methods.copy(), copy.deepcopy(self._load_data)): tick
+                executor.submit(
+                    _run_pipeline_for_tick,
+                    tick,
+                    methods.copy(),
+                    data_loader,
+                    return_data_to_parent,
+                ): tick
                 for tick, methods in self._method_pipeline.items() 
             }
             for f in as_completed(futures):
@@ -275,14 +338,20 @@ class DataManager:
                 else:
                     self.outputs[tick] = output
                     self.model_params[tick] = model_params
-                    if retain_data:
+                    if return_data_to_parent and data is not None:
                         self.data[tick] = data
                     if save_data:
                         self.save_parquet(tick=tick, data=save_data)
 
         with ProcessPoolExecutor(max_workers=-((-n_workers)//2)) as executor:
             futures = {
-                executor.submit(_run_pipeline_for_tick, tick, methods, self._load_data): tick
+                executor.submit(
+                    _run_pipeline_for_tick,
+                    tick,
+                    methods,
+                    data_loader,
+                    return_data_to_parent,
+                ): tick
                 for tick, methods in self._method_pipeline.items() if tick in failed
             }
             for f in as_completed(futures):
@@ -293,7 +362,7 @@ class DataManager:
                 else:
                     self.outputs[tick] = output
                     self.model_params[tick] = model_params
-                    if retain_data:
+                    if return_data_to_parent and data is not None:
                         self.data[tick] = data
                     if save_data:
                         self.save_parquet(tick=tick, data=save_data)
@@ -328,6 +397,10 @@ class DataManager:
             per_stock_equity = {tick: self.outputs.get(tick, pd.DataFrame()) for tick in ticks}
             result = method(per_stock_equity, **kwargs)
             self.combined_outputs[method.__name__] = result
+            if isinstance(result, Mapping):
+                for tick, df in result.items():
+                    if isinstance(tick, str):
+                        self.outputs[tick] = df
             return None
 
         name = ''

@@ -9,6 +9,7 @@ from matplotlib import ticker
 import pandas as pd
 import numpy as np
 import inspect
+import requests
 
 import pytz
 
@@ -55,7 +56,7 @@ class Transformer:
     
     def add(self, name: str, func: Callable) -> None:
         """Dynamically add a new feature method."""
-        ref_sig = inspect.signature(self.drop_stale_options)
+        ref_sig = inspect.signature(self.get_underlying)
         func_sig = inspect.signature(func)
 
         if ref_sig != func_sig:
@@ -257,6 +258,80 @@ class Transformer:
         return data
     
     @staticmethod
+    def pe_ratio(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Adds PE ratio from Yahoo Finance"""
+        import os
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        path = os.getenv("PE_PATH", "")
+        tick = kwargs.get("tick", "")
+        if not tick:
+            raise ValueError("pe_ratio requires a tick symbol (e.g., tick='AAPL').")
+
+        # Only load the date column plus the requested ticker to avoid pulling a huge CSV into memory.
+        try:
+            csv = pd.read_csv(path, usecols=["Date", tick])
+        except ValueError:
+            # Column missing in file; fall back to loading just Date to raise a clear KeyError below.
+            csv = pd.read_csv(path, usecols=["Date"])
+        csv.index = pd.to_datetime(csv['Date'], errors='coerce')
+        try:
+            csv.index = csv.index.tz_localize(None)
+        except TypeError:
+            pass
+
+        if tick not in csv.columns:
+            raise KeyError(f"Ticker '{tick}' not found in PE CSV columns.")
+
+        # Use underlying price to scale forward-filled PE values.
+        if 'underlying_close' not in data.columns:
+            raise ValueError("pe_ratio requires 'underlying_close' in data for price scaling.")
+
+        trade_dates = pd.to_datetime(data['trade_date'], errors='coerce')
+        try:
+            trade_dates = trade_dates.dt.tz_localize(None)
+        except TypeError:
+            pass
+        valid_mask = ~trade_dates.isna()
+
+        # One underlying price per trade date.
+        prices_by_date = pd.Series(
+            data.loc[valid_mask, 'underlying_close'].values,
+            index=trade_dates[valid_mask]
+        ).groupby(level=0).first().sort_index()
+
+        pe_raw = csv[tick]
+        pe_raw = pe_raw.loc[~pe_raw.index.isna()]
+        if pe_raw.index.has_duplicates:
+            pe_raw = pe_raw.groupby(pe_raw.index).last().sort_index()
+        else:
+            pe_raw = pe_raw.sort_index()
+
+        pe_aligned = pe_raw.reindex(prices_by_date.index)
+
+        scaled_pe = pd.Series(index=prices_by_date.index, dtype=float)
+        last_pe = np.nan
+        last_price = np.nan
+        for date in prices_by_date.index:
+            pe_val = pe_aligned.loc[date]
+            price_today = prices_by_date.loc[date]
+            if not pd.isna(pe_val):
+                last_pe = pe_val
+                last_price = price_today
+                scaled_pe.loc[date] = pe_val
+            else:
+                if pd.isna(last_pe) or pd.isna(price_today) or pd.isna(last_price) or last_price == 0:
+                    scaled_pe.loc[date] = np.nan
+                else:
+                    scaled_pe.loc[date] = last_pe * price_today / last_price
+
+        data['pe_ratio'] = trade_dates.map(scaled_pe)
+        return data
+
+
+
+    @staticmethod
     def scale_by_splits(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Scales option prices for stock splits"""
         splits = kwargs.get("splits", {})
@@ -285,12 +360,145 @@ class Transformer:
                     split_date = split_date.tz_localize(None)
                 mask = trade_dates_naive < split_date
                 data.loc[mask, cols_to_scale] /= ratio
-                #if 'underlying_close' in data.columns:
-                #    data.loc[mask, 'underlying_close'] /= ratio
             except Exception as e:
                 print(f"Skipping split on {date}: {e}")
         return data
-    
+
+    @staticmethod
+    def underlying_skew(data, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """Calculates the skew of the underlying over a rolling window"""
+        window_size = kwargs.get("window_size", 30)
+        min_periods = kwargs.get("min_periods", max(3, window_size // 2))
+
+        if "underlying_close" not in data.columns:
+            raise ValueError("underlying_skew requires 'underlying_close'. Run get_underlying first.")
+
+        trade_dates = pd.to_datetime(data["trade_date"], errors="coerce")
+        try:
+            trade_dates = trade_dates.dt.tz_localize(None)
+        except TypeError:
+            pass
+
+        # Deduplicate per-day closes to avoid overweighting days with more contracts.
+        daily_close = pd.Series(
+            pd.to_numeric(data["underlying_close"], errors="coerce").values,
+            index=trade_dates
+        ).groupby(level=0).first().sort_index()
+
+        log_returns = np.log(daily_close / daily_close.shift(1))
+        daily_skew = log_returns.rolling(window=window_size, min_periods=min_periods).skew()
+
+        # Broadcast back to the full frame by trade_date so every row on the day gets the same value.
+        data = data.copy()
+        data["underlying_skew"] = trade_dates.map(daily_skew)
+        return data
+
+    @staticmethod
+    def avg_log_return(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """
+        In-place addition of single-metric ALR:
+
+            ALR = mean(log returns over window)
+
+        Works on options-level data without creating a full copy.
+        """
+
+        window = kwargs.get("window_size", 90)
+        min_periods = kwargs.get("min_periods", max(30, window // 2))
+
+        # --- validate required columns ---
+        required = {"trade_date", "ticker", "underlying_close"}
+        if not required.issubset(data.columns):
+            raise ValueError(f"Requires columns: {required}")
+
+        # ensure datetime
+        data["trade_date"] = pd.to_datetime(data["trade_date"], errors="coerce")
+
+        # --- one daily close per ticker ---
+        daily = (
+            data.groupby(["ticker", "trade_date"])["underlying_close"]
+                .first()
+                .unstack("ticker")
+                .sort_index()
+        )
+
+        # --- compute daily log returns ---
+        log_ret = np.log(daily / daily.shift(1))
+
+        # --- rolling mean log return ---
+        avg_ret = log_ret.rolling(window, min_periods=min_periods).mean()
+
+        # --- broadcast back WITHOUT copying main frame ---
+        avg_stacked = avg_ret.stack()   # index = (trade_date, ticker)
+
+        data["avg_log_return"] = (
+            data.set_index(["trade_date", "ticker"])
+                .index.map(avg_stacked)
+        )
+
+        # --- cleanup ---
+        del daily, log_ret, avg_ret, avg_stacked
+
+        return data
+
+    @staticmethod
+    def add_tail_selective_performance(data: pd.DataFrame, **kwargs) -> pd.DataFrame:
+        """
+        In-place addition of single-metric TSP:
+
+            TSP = median(returns) / |ES_5%|
+
+        Works on options-level data without creating a full copy.
+        """
+
+        window = kwargs.get("window_size", 90)
+        min_periods = kwargs.get("min_periods", max(30, window // 2))
+
+        # --- validate required columns ---
+        required = {"trade_date", "ticker", "underlying_close"}
+        if not required.issubset(data.columns):
+            raise ValueError(f"Requires columns: {required}")
+
+        # ensure datetime
+        data["trade_date"] = pd.to_datetime(data["trade_date"], errors="coerce")
+
+        # --- get ONE daily close per ticker ---
+        daily = (
+            data.groupby(["ticker", "trade_date"])["underlying_close"]
+                .first()
+                .unstack("ticker")
+                .sort_index()
+        )
+
+        # --- compute daily log returns ---
+        log_ret = np.log(daily / daily.shift(1))
+
+        # --- rolling median (typical performance) ---
+        median_ret = log_ret.rolling(window, min_periods=min_periods).median()
+
+        # --- expected shortfall (5%) for downside tail ---
+        q05 = log_ret.rolling(window, min_periods=min_periods).quantile(0.05)
+        es_5 = (
+            log_ret.where(log_ret <= q05)
+                .rolling(window, min_periods=min_periods)
+                .mean()
+        )
+
+        # --- single metric ---
+        tsp = median_ret / es_5.abs()
+
+        # --- broadcast back WITHOUT copying the main frame ---
+        tsp_stacked = tsp.stack()   # index = (trade_date, ticker)
+
+        data["tsp_metric"] = data.set_index(["trade_date", "ticker"]) \
+                                .index.map(tsp_stacked)
+
+        # --- clean up to free memory ---
+        del daily, log_ret, median_ret, q05, es_5, tsp, tsp_stacked
+
+        return data
+
+
     @staticmethod
     def drop_contract(data, **kwargs: dict[str, any]) -> pd.DataFrame:
         """Drops a contract type"""

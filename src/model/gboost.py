@@ -73,6 +73,7 @@ class GradientBoostingRegressor(BaseModel):
         fixed_effect_col = kwargs.get("diff_ticks")
         X = outputs[X_cols].copy()
         y = outputs[y_col].values
+        X = X.loc[:, ~X.columns.duplicated()]
 
         encoder_cols = []
         if fixed_effect_col and fixed_effect_col in outputs.columns:
@@ -144,6 +145,7 @@ class GradientBoostingRegressor(BaseModel):
 
         fixed_effect_col = kwargs.get("diff_ticks") or params.get("fixed_effect_col")
         X_pred = X.copy()
+        X_pred = X_pred.loc[:, ~X_pred.columns.duplicated()]
         if fixed_effect_col and fixed_effect_col in X_pred.columns:
             # keep the raw categorical column for the encoder
             pass

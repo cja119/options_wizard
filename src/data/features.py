@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, List
 import pandas as pd
 import numpy as np
 import inspect
+import requests
 
 if TYPE_CHECKING:
     from .manager import DataManager
@@ -72,6 +73,29 @@ class Features:
         iv_rv_ratio = data['implied_volatility'] / data['realized_volatility']
         iv_rv_ratio.name = 'iv_rv_ratio'
         return iv_rv_ratio
+
+    @staticmethod
+    def propagate_column(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
+        """
+        Copy one or more existing columns from the raw data into the feature outputs unchanged.
+        Useful when a later stage (e.g., backtests) expects those fields to be present.
+        """
+        cols = kwargs.get("columns") or kwargs.get("column") or kwargs.get("feature_names")
+        if cols is None:
+            raise ValueError("propagate_column requires 'columns' (str or list).")
+        if isinstance(cols, str):
+            cols = [cols]
+        missing = [c for c in cols if c not in data.columns]
+        if missing:
+            raise KeyError(f"Columns not found in data: {missing}")
+        propagated = data.loc[:, cols].copy()
+        # Drop any nested/non-scalar values so downstream modeling doesn't see arrays/Series.
+        mask_nested = propagated.applymap(lambda v: not pd.api.types.is_scalar(v))
+        if mask_nested.any().any():
+            propagated = propagated.where(~mask_nested, np.nan)
+        # Standardise to numeric to avoid object columns leaking through.
+        propagated = propagated.apply(pd.to_numeric, errors="coerce")
+        return propagated
     
     @staticmethod
     def mac_vol(data: pd.DataFrame, **kwargs: dict[str, any]) -> pd.DataFrame:
@@ -190,9 +214,19 @@ class Features:
             entry_price_magnitude = group['mid_price_entry'].abs().sum()
             entry_position = (group['position'] * group['mid_price_entry']).sum()
             exit_position = (group['position'] * group['mid_price_exit']).sum()
+
+            def _safe_log_ratio(numer: float, denom: float) -> float:
+                """Return log(numer/denom) only when positive and finite."""
+                try:
+                    ratio = numer / denom
+                except Exception:
+                    return np.nan
+                if ratio is None or not np.isfinite(ratio) or ratio <= 0:
+                    return np.nan
+                return np.log(ratio)
             
-            long_pnl = np.log((exit_position - entry_position + entry_price_magnitude) / entry_price_magnitude)
-            short_pnl = np.log((entry_price_magnitude - (exit_position - entry_position)) / entry_price_magnitude)
+            long_pnl = _safe_log_ratio(exit_position - entry_position + entry_price_magnitude, entry_price_magnitude)
+            short_pnl = _safe_log_ratio(entry_price_magnitude - (exit_position - entry_position), entry_price_magnitude)
             series_dict = {
                 'long_pnl': long_pnl,
                 'short_pnl': short_pnl,
@@ -297,7 +331,8 @@ class Features:
             exit_value_total = (group['position'] * group['mid_price_exit']).sum()
 
             pnl = exit_value_total - entry_value_total
-            combined_pnl = np.log((current_equity + pnl) / current_equity)
+            ratio = (current_equity + pnl) / current_equity if current_equity != 0 else np.nan
+            combined_pnl = np.log(ratio) if np.isfinite(ratio) and ratio > 0 else np.nan
             current_equity += pnl
 
             # Update outputs

@@ -93,6 +93,7 @@ class MultiLayerPerceptron(BaseModel):
 
         fixed_effect_col = kwargs.get("diff_ticks")
         X_df = outputs[X_cols].copy()
+        X_df = X_df.loc[:, ~X_df.columns.duplicated()]
         y = outputs[y_col].values
 
         if fixed_effect_col and fixed_effect_col in outputs.columns:
@@ -156,6 +157,7 @@ class MultiLayerPerceptron(BaseModel):
                 raise ValueError(f"Missing '{fixed_effect_col}' column required for target encoding")
 
         X_pred = X.copy()
+        X_pred = X_pred.loc[:, ~X_pred.columns.duplicated()]
         if fixed_effect_col and fixed_effect_col in X_pred.columns:
             X_pred = X_pred.drop(columns=[fixed_effect_col])
             X_pred[fixed_effect_col] = X[fixed_effect_col]

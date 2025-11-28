@@ -10,16 +10,26 @@ import numpy as np
 import os
 from dotenv import load_dotenv
 
+from dataclasses import dataclass
+from typing import List, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .backtest.trade import DateObj
+
+@dataclass
+class Stock:
+    ticker: str
+    tradable: List[Tuple[DateObj, DateObj]]
 
 class Universe:
 
     def __init__(self, ticks: list[str] | None = None):
         self.ticks: list[str] | None = ticks
-        self.lower_date: pd.Timestamp | None = None
-        self.upper_date: pd.Timestamp | None = None
+        self.lower_date: DateObj | None = None
+        self.upper_date: DateObj | None = None
         return None
 
-    def set_dates(self, lower: pd.Timestamp, upper: pd.Timestamp):
+    def set_dates(self, lower: DateObj, upper: DateObj):
         self.lower_date = lower
         self.upper_date = upper
         return None

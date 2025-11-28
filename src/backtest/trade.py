@@ -1,86 +1,28 @@
 """
-
+Trade class definitions
 """
 
-from abc import ABC, abstractmethod
-import pandas as pd
-from dataclasses import dataclass, field
-from collections import defaultdict, deque
-from typing import Any, Tuple
-from functools import total_ordering
-from enum import Enum 
+from __future__ import annotations
 
-class AccountingConvention(Enum):
-    CASH = "cash"
-    MTM = "mark_to_market"
+from typing import Tuple, TYPE_CHECKING
 
-class PositionType(Enum):
-    LONG = "long"
-    SHORT = "short"
+from data.trade import (
+    TransactionCostModel,
+    AccountingConvention,
+    Equity,
+    Cashflow
+)
 
-class TransactionCostModel(Enum):
-    NONE = "none"
-    SPREAD = "spread"
-
-@total_ordering
-@dataclass(frozen=True)
-class DateObj:
-    year: int
-    month: int
-    day: int
-
-    def __eq__(self, other):
-        if not isinstance(other, DateObj):
-            return NotImplemented
-        return (self.year, self.month, self.day) == (other.year, other.month, other.day)
-
-    def __lt__(self, other):
-        if not isinstance(other, DateObj):
-            return NotImplemented
-        return (self.year, self.month, self.day) < (other.year, other.month, other.day)
-
-@dataclass
-class PriceQuote:
-    bid: float
-    ask: float
-    volume: float
-    date: DateObj
-
-@dataclass 
-class PriceSeries:
-    prices: dict[DateObj, PriceQuote] = field(default_factory=dict)
-
-    def add(self, price_quote: PriceQuote) -> None:
-        self.prices[price_quote.date] = price_quote
-
-@dataclass
-class Equity:
-    date: DateObj
-    value: float
-    accounting_convention: AccountingConvention 
-    parent_trade: 'Trade' | None = None
-
-
-@dataclass
-class Cashflow:
-    date: DateObj
-    amount: float
-    accounting_convention: AccountingConvention 
-    parent_trade: 'Trade' | None = None
-
-@dataclass 
-class BaseTradeFeatures(ABC):
-    pass
-
-@dataclass
-class EntryData:
-    entry_date: DateObj
-    position_type: PositionType
-    price_series: PriceSeries
-    exit_date: DateObj
-    position_size: float = 1.0
-    features: BaseTradeFeatures | None = None
+if TYPE_CHECKING:
+    from ..data.date import DateObj
+    from ..data.trade import (
+        PositionType,
+        EntryData,
+        BaseUnderlying,
+        BaseTradeFeatures
+    )
     
+
 class Trade:
     def __init__(
             self,
@@ -130,17 +72,7 @@ class Trade:
         return self._open_condition(date)
 
     # ---- Internal Methods ---- #
-    def _mtm_equity(self, date: DateObj) -> Equity:
-        price: PriceQuote = self.entry_data.price_series.prices[date]
-        equity = Equity(
-            date=date,
-            value=self._price_exposure(price) - self._entry_exposure,
-            accounting_convention = AccountingConvention.MTM,
-            parent_trade=self
-        )
-        return equity
-
-    def _calculate_tcs(self, price: PriceQuote) -> float:
+    def _calculate_tcs(self, price: BaseUnderlying) -> float:
         if self.transaction_cost_model == TransactionCostModel.NONE:
             return 0.0
         if self.transaction_cost_model == TransactionCostModel.SPREAD:
@@ -149,10 +81,24 @@ class Trade:
         else:
             return 0.0
 
+    def _mtm_equity(self, date: DateObj) -> Equity:
+        price: BaseUnderlying = self.entry_data.price_series.prices[date]
+        equity = Equity(
+            date=date,
+            value=self._price_exposure(price) - self._entry_exposure,
+            accounting_convention = AccountingConvention.MTM,
+            parent_trade=self
+        )
+        return equity
+    
+    @property
+    def _pos_sign(self) -> int:
+        return 1 if self.entry_data.position_type == PositionType.LONG else -1
+
     def _cash_equity(self, date: DateObj) -> Equity:
-        price: PriceQuote = self.entry_data.price_series.prices[date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[date]
         ps: float = self.entry_data.position_size
-        value: float = (price.bid + price.ask) / 2  * ps
+        value: float = (price.bid + price.ask) / 2  * self._pos_sign * ps
 
         equity = Equity(
             date=date,
@@ -173,12 +119,12 @@ class Trade:
         return self.entry_data.entry_date <= date <= self.entry_data.exit_date and not self._closed 
 
     def _close_trade(self) -> Cashflow:
-        price: PriceQuote = self.entry_data.price_series.prices[self.entry_data.exit_date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.exit_date]
         tcs: float = self._calculate_tcs(price)
 
         if self.accounting_type == AccountingConvention.CASH:
             ps: float = self.entry_data.position_size 
-            cashflow_amount = - price.bid * ps + tcs if self.entry_data.position_type == PositionType.LONG else - price.ask * ps + tcs 
+            cashflow_amount = price.bid * ps - tcs if self._pos_sign > 0 else - price.ask * ps - tcs 
         elif self.accounting_type == AccountingConvention.MTM:
             cashflow_amount = self._price_exposure(price) - self._entry_exposure
 
@@ -200,17 +146,23 @@ class Trade:
         self.entry_data.position_size *= other
         return self
     
-    def _cash_position(self, price: PriceQuote) -> float:
+    def __imul__(self, other: float) -> 'Trade':
+        if self._opened:
+            raise RuntimeError("Cannot resize an already-open trade")
+        self.entry_data.position_size *= other
+        return self
+    
+    def _cash_position(self, price: BaseUnderlying) -> float:
         tcs: float = self._calculate_tcs(price)
-        return price.ask + tcs if self.entry_data.position_type == PositionType.LONG else - price.bid + tcs
+        return - price.ask - tcs if (self._pos_sign) > 0 else price.bid - tcs
 
-    def _price_exposure(self, price: PriceQuote) -> float:
+    def _price_exposure(self, price: BaseUnderlying) -> float:
         ps: float = self.entry_data.position_size
-        return (price.bid + price.ask) / 2 * (1 if self.entry_data.position_type == PositionType.LONG else -1) * ps
-
+        return (price.bid + price.ask) / 2 * self._pos_sign * ps
+    
     def _initialize_trade(self) -> Cashflow:
        
-        price: PriceQuote = self.entry_data.price_series.prices[self.entry_data.entry_date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.entry_date]
 
         if self.accounting_type == AccountingConvention.CASH:
             cashflow_amount =  self._cash_position(price)

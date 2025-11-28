@@ -2,18 +2,18 @@
 Position Management Module
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Dict
-from .trade import DateObj, Trade, Equity, CashFlow
+from typing import List, Dict, TYPE_CHECKING
 
-@dataclass(frozen=True)
-class Snapshot:
-    date: DateObj
-    total_equity: float
-    total_cash: float
-    trade_equities: Dict[Trade, Equity]
+if TYPE_CHECKING:
+    from data.date import DateObj
+    from .trade import Trade
+    from data.trade import Snapshot
         
+
 @dataclass
 class BackTestConfig(ABC):
     starting_cash: float
@@ -26,6 +26,7 @@ class PositionBase(ABC):
         self._sizes: dict[Trade, float] = {}
         self._start_date: DateObj = config.start_date
         self._end_date: DateObj | None = config.end_date 
+        self.starting_cash: float = config.starting_cash
 
         self._snapshot = Snapshot(
             date=config.start_date,
@@ -42,15 +43,15 @@ class PositionBase(ABC):
             self._trades.extend(trade)
 
     def __call__(self, date: DateObj) -> Snapshot:
-        # First update entries/exits
+        # -- Update entries/exits -- 
         entering_trades = self.trades_entering(date)
         self._sizes |= self._size_entry(entering_trades)
 
-        # Then process exits
+        # -- Process exits -- 
         live_trades = self._trades_on(date)
         live_trades = self.exit_trigger(live_trades)
 
-        # Finally update equity#
+        # -- Update equity -- 
         snapshot = self._update(live_trades, date)
 
         return snapshot

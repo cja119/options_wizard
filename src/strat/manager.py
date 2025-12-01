@@ -9,7 +9,7 @@ from .types import (
     DataType,
     OutputType,
     StratType,
-    ModelType
+    ModelType,
 ) 
 
 FNS_SIG = List[Tuple[Callable, Dict[str, Any]]]
@@ -60,7 +60,7 @@ class SingleTickProcessor:
             self._output += function(self._data, self._output, **kwargs)
 
         elif function._wrap == FuncType.STRAT:
-            self._strat += function(self._data, self._output, **kwargs)
+            self._strat += function(self._data, **kwargs)
         
         elif function._wrap == FuncType.MODEL:
             self._model += function(self._output, **kwargs)

@@ -1,12 +1,15 @@
 
-from dataclasses import dataclass
+
 from functools import total_ordering
+from dataclasses import dataclass
+from data.base import Serializable
 
 SECONDS_IN_DAY = 86400
 
+
 @total_ordering
 @dataclass(frozen=True)
-class DateObj:
+class DateObj(Serializable):
     year: int
     month: int
     day: int
@@ -48,5 +51,28 @@ class DateObj:
         from datetime import timedelta
         dt = self.to_datetime() + timedelta(days=other)
         return DateObj.from_datetime(dt)
+    
+    def __str__(self):
+        return f"{self.year:04d}-{self.month:02d}-{self.day:02d}"
+    
+    def __repr__(self):
+        return f"DateObj(year={self.year}, month={self.month}, day={self.day})"
+    
+    def to_iso(self) -> str:
+        return self.__str__()
+    
+    @staticmethod
+    def from_iso(date_str: str) -> 'DateObj':
+        year, month, day = map(int, date_str.split('-'))
+        return DateObj(year, month, day)
+    
+    # treat as a string
+    def to_dict(self):
+        return self.to_iso()
+
+    @classmethod
+    def from_dict(cls, value):
+        return cls.from_iso(value)
+
 
 

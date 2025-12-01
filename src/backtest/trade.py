@@ -10,13 +10,14 @@ from data.trade import (
     TransactionCostModel,
     AccountingConvention,
     Equity,
-    Cashflow
+    Cashflow,
+    PositionType
 )
+
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
     from ..data.trade import (
-        PositionType,
         EntryData,
         BaseUnderlying,
         BaseTradeFeatures
@@ -48,12 +49,15 @@ class Trade:
             cashflow: Cashflow = self._initialize_trade()
         elif self._close_condition(date):
             cashflow: Cashflow = self._close_trade()
+            equity: Equity | None = None
+            return equity, cashflow
 
         if self.accounting_type == AccountingConvention.MTM:
             equity: Equity = self._mtm_equity(date)
         
         elif self.accounting_type == AccountingConvention.CASH:
             equity: Equity = self._cash_equity(date)
+
 
         return equity, cashflow
     
@@ -70,20 +74,26 @@ class Trade:
     
     def is_entering_on(self, date: DateObj) -> bool:
         return self._open_condition(date)
+    
+    def days_open(self, current_date: DateObj) -> int:
+        if not self._live_condition(current_date):
+            return 0
+        delta = current_date - self.entry_data.entry_date
+        return delta + 1
 
     # ---- Internal Methods ---- #
     def _calculate_tcs(self, price: BaseUnderlying) -> float:
         if self.transaction_cost_model == TransactionCostModel.NONE:
             return 0.0
         if self.transaction_cost_model == TransactionCostModel.SPREAD:
-            spread = price.ask - price.bid
+            spread = (price.ask - price.bid) * abs(self.entry_data.position_size)
             return spread / 2
         else:
             return 0.0
 
     def _mtm_equity(self, date: DateObj) -> Equity:
-        price: BaseUnderlying = self.entry_data.price_series.prices[date]
-        equity = Equity(
+        price: BaseUnderlying = self.entry_data.price_series.prices[date.to_iso()]
+        equity = Equity(    
             date=date,
             value=self._price_exposure(price) - self._entry_exposure,
             accounting_convention = AccountingConvention.MTM,
@@ -96,7 +106,7 @@ class Trade:
         return 1 if self.entry_data.position_type == PositionType.LONG else -1
 
     def _cash_equity(self, date: DateObj) -> Equity:
-        price: BaseUnderlying = self.entry_data.price_series.prices[date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[date.to_iso()]
         ps: float = self.entry_data.position_size
         value: float = (price.bid + price.ask) / 2  * self._pos_sign * ps
 
@@ -119,7 +129,7 @@ class Trade:
         return self.entry_data.entry_date <= date <= self.entry_data.exit_date and not self._closed 
 
     def _close_trade(self) -> Cashflow:
-        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.exit_date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.exit_date.to_iso()]
         tcs: float = self._calculate_tcs(price)
 
         if self.accounting_type == AccountingConvention.CASH:
@@ -154,7 +164,8 @@ class Trade:
     
     def _cash_position(self, price: BaseUnderlying) -> float:
         tcs: float = self._calculate_tcs(price)
-        return - price.ask - tcs if (self._pos_sign) > 0 else price.bid - tcs
+        ps: float = self.entry_data.position_size
+        return - price.ask * ps - tcs if (self._pos_sign) > 0 else price.bid * ps - tcs
 
     def _price_exposure(self, price: BaseUnderlying) -> float:
         ps: float = self.entry_data.position_size
@@ -162,7 +173,7 @@ class Trade:
     
     def _initialize_trade(self) -> Cashflow:
        
-        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.entry_date]
+        price: BaseUnderlying = self.entry_data.price_series.prices[self.entry_data.entry_date.to_iso()]
 
         if self.accounting_type == AccountingConvention.CASH:
             cashflow_amount =  self._cash_position(price)

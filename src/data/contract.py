@@ -4,19 +4,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from abc import ABC
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-if TYPE_CHECKING:
-    from .date import DateObj
+from .base import Serializable
+from .date import DateObj
 
 @dataclass
-class BaseUnderlying(ABC):
+class BaseUnderlying(Serializable, ABC):
     bid: float
     ask: float
     volume: float
     date: 'DateObj'
+    tick: str
 
-class OptionType(Enum):
+class OptionType(str, Enum):
     CALL = "call"
     PUT = "put"
 
@@ -37,7 +38,7 @@ class Option(BaseUnderlying):
 
     # --- Optional Fields --- #
     iv: Optional[float] = field(default=None)   
-    underlying: Optional['Spot' | 'Future'] = field(default=None)   
+    underlying: Optional[BaseUnderlying] = field(default=None)   
     rfr: Optional[float] = field(default=None)       
     delta: Optional[float] = field(default=None)
     gamma: Optional[float] = field(default=None)
@@ -48,6 +49,6 @@ class Option(BaseUnderlying):
 
     def __hash__(self) -> int:
         return hash((self.option_type, self.strike, self.expiry, self.date))
-
+    
 
     

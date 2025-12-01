@@ -6,14 +6,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Dict, TYPE_CHECKING
+from typing import List, Dict, TYPE_CHECKING, Tuple
+
+from data.trade import Cashflow, Snapshot
+from backtest.trade import Trade
 
 if TYPE_CHECKING:
     from data.date import DateObj
     from .trade import Trade
-    from data.trade import Snapshot
-        
-
+    
 @dataclass
 class BackTestConfig(ABC):
     starting_cash: float
@@ -49,27 +50,26 @@ class PositionBase(ABC):
 
         # -- Process exits -- 
         live_trades = self._trades_on(date)
-        live_trades = self.exit_trigger(live_trades)
+        live_trades, exit_cashflows = self.exit_trigger(live_trades, date)
 
         # -- Update equity -- 
-        snapshot = self._update(live_trades, date)
+        snapshot = self._update(live_trades, date, exit_cashflows)
 
         return snapshot
 
     # ---- Abstract Methods ---- #
     @abstractmethod
-    def size_function(self, trade: Trade) -> float:
+    def size_function(self, entering_trades: List[Trade]) -> Dict[Trade, float]:
         pass
 
     @abstractmethod
-    def exit_trigger(self, trades: List[Trade]) -> List[Trade]:
+    def exit_trigger(self, live_trades: List[Trade], current_date: DateObj) -> Tuple[List[Trade], List['Cashflow']]:
         pass
     
     # ---- Internal Methods ---- #
     def _size_entry(self, trades: List[Trade]) -> Dict[Trade, float]:
-        sizes = {}
+        sizes = self.size_function(trades)
         for trade in trades:
-            sizes[trade] = self.size_function(trade)
             trade *= sizes[trade]
         return sizes
 
@@ -81,9 +81,13 @@ class PositionBase(ABC):
         trades = [trade for trade in self._trades if trade.is_entering_on(date)]
         return trades
 
-    def _update(self, live_trades: list[Trade], date: DateObj) -> Snapshot:
+    def _update(self, live_trades: list[Trade], date: DateObj, exit_cashflows: List[Cashflow] | None = None) -> Snapshot:
 
         total_cash = self._snapshot.total_cash
+        if exit_cashflows is not None:
+            for cashflow in exit_cashflows:
+                total_cash += cashflow.amount
+
         trade_equities = self._snapshot.trade_equities.copy()
         total_equity = 0.0
 

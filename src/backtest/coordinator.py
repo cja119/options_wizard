@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 
 class BackTestCoordinator:
 
-    def __init__(self, postition: PositionBase, dates: Deque[DateObj]) -> None:
-        self._position = postition
+    def __init__(self, position: PositionBase, dates: Deque[DateObj]) -> None:
+        self._position = position
         self._dates = dates
         self._snapshots = deque()
         self._returns = deque()

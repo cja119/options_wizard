@@ -4,7 +4,7 @@ Base class definitions for data objects
 
 import pickle
 from dataclasses import fields, is_dataclass
-from typing import get_origin, get_args, Union, get_type_hints
+from typing import get_origin, get_args, Union, get_type_hints, Dict
 
 PRIMITIVES = (int, float, str, bool, type(None))
 
@@ -53,11 +53,16 @@ class Serializable:
 
     @staticmethod
     def _decode(value, expected_type):
+        if value is None:
+            return None
+
         target = Serializable._unwrap_type(expected_type)
 
-        # reconstruct Serializable subclass
+        # reconstruct Serializable subclass; allow subclasses to provide a hook
         if target is not None and issubclass(target, Serializable):
-            # value may be a string, dict, or primitive
+            hook = getattr(target, "from_serialized_dict", None)
+            if callable(hook):
+                return hook(value)
             return target.from_dict(value)
 
         # primitive
@@ -68,14 +73,28 @@ class Serializable:
         if isinstance(value, list):
             inner = None
             if hasattr(expected_type, "__args__"):
-                inner = expected_type.__args__[0]
+                origin = get_origin(expected_type)
+                args = get_args(expected_type)
+                if origin is list and args:
+                    inner = args[0]
             return [Serializable._decode(v, inner) for v in value]
 
         # dict
         if isinstance(value, dict):
             inner = None
-            if hasattr(expected_type, "__args__") and len(expected_type.__args__) == 2:
-                inner = expected_type.__args__[1]   # dict[str, VALUE_TYPE]
+            origin = get_origin(expected_type)
+            args = get_args(expected_type)
+            if origin in (dict, Dict) and len(args) == 2:
+                inner = args[1]  # dict[key_type, value_type]
+            elif origin is Union:
+                for arg in args:
+                    if arg is type(None):
+                        continue
+                    arg_origin = get_origin(arg)
+                    arg_args = get_args(arg)
+                    if arg_origin in (dict, Dict) and len(arg_args) == 2:
+                        inner = arg_args[1]
+                        break
             return {k: Serializable._decode(v, inner) for k, v in value.items()}
 
         # fallback pickle

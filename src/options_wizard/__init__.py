@@ -3,6 +3,7 @@ from model import *
 from data import *
 from backtest import *
 from universe import *
+from cs import *
 import types
 
 __all__ = sorted(

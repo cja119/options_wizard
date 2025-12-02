@@ -19,6 +19,7 @@ from data.contract import *
 
 SAVE_PATH: Path = Path(os.getcwd()) / "tmp"
 
+
 class FuncType(Enum):
     LOAD = "load_function"
     DATA = "data_function"
@@ -26,14 +27,17 @@ class FuncType(Enum):
     STRAT = "strategy_function"
     MODEL = "model_function"
 
+
 class BaseType(ABC):
-    def __init__(self, data: None | pl.DataFrame | List | Deque = None, tick: str = "") -> None:
+    def __init__(
+        self, data: None | pl.DataFrame | List | Deque = None, tick: str = ""
+    ) -> None:
         if isinstance(data, (list, Deque)):
             data = self._from_list(data)
         self._data: None | pl.DataFrame = data
         self._tick: str = tick
-    
-    #--- Abstract Methods --- #
+
+    # --- Abstract Methods --- #
     @abstractmethod
     def __add__(self, other: BaseType) -> BaseType:
         pass
@@ -41,7 +45,7 @@ class BaseType(ABC):
     # --- External Interface --- #
     def __iadd__(self, other: BaseType) -> BaseType:
         return self.__add__(other)
-    
+
     def __call__(self) -> None | pl.DataFrame:
         return self._data
 
@@ -50,8 +54,11 @@ class BaseType(ABC):
         if save_path.parent.exists() is False:
             save_path.parent.mkdir(parents=True, exist_ok=True)
         self._data.write_parquet(save_path)
-        return None            
+        return None
     
+    def isempty(self) -> bool:
+        return self._data is None or self._data.is_empty()
+
     @classmethod
     def load(cls, tick: str) -> BaseType:
         load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
@@ -59,13 +66,14 @@ class BaseType(ABC):
             return cls(data=None, tick=tick)
         data = pl.read_parquet(load_path)
         return cls(data=data, tick=tick)
-    
+
     def _from_list(self, data: List | Deque) -> pl.DataFrame:
         raise NotImplementedError("Subclasses must implement _from_list method")
 
+
 class DataType(BaseType):
     _name = "data"
-    
+
     # --- Override Methods --- #
     @override
     def __add__(self, other: DataType) -> DataType:
@@ -73,9 +81,10 @@ class DataType(BaseType):
         self._data = other._data
         return self
 
+
 class OutputType(BaseType):
     _name = "output"
-    
+
     # --- Override Methods --- #
     @override
     def __add__(self, other: OutputType) -> OutputType:
@@ -85,6 +94,7 @@ class OutputType(BaseType):
         else:
             self._data = pl.concat([self._data, other._data], how="diagonal")
         return self
+
 
 class StratType(BaseType):
     _name = "strategy"
@@ -141,9 +151,11 @@ class StratType(BaseType):
     @staticmethod
     def _from_list(data):
         return [obj.to_dict() for obj in data]
-    
+
+
 class ModelType(BaseType):
     _name = "model"
+
     # --- Override Methods --- #
     @override
     def __add__(self, other: ModelType) -> ModelType:
@@ -153,4 +165,3 @@ class ModelType(BaseType):
         else:
             self._data = pl.concat([self._data, other._data], how="vertical")
         return self
-

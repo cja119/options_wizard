@@ -4,7 +4,7 @@ from .trade import (
     Equity,
     Cashflow,
     EntryData,
-    PositionType, 
+    PositionType,
     TransactionCostModel,
     AccountingConvention,
     PriceSeries,
@@ -27,4 +27,3 @@ __all__ = [
     "PriceSeries",
     "BaseTradeFeatures",
 ]
-

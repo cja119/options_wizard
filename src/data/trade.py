@@ -10,7 +10,7 @@ from typing import List, Dict, TYPE_CHECKING
 from enum import Enum
 
 from data.date import DateObj, Serializable
-from data.contract import BaseUnderlying
+from data.contract import BaseUnderlying, infer_underlying_type
 from .base import Serializable
 
 if TYPE_CHECKING:
@@ -23,61 +23,70 @@ class AccountingConvention(str, Enum):
     CASH = "cash"
     MTM = "mark_to_market"
 
+
 class PositionType(str, Enum):
     LONG = "long"
     SHORT = "short"
+
 
 class TransactionCostModel(str, Enum):
     NONE = "none"
     SPREAD = "spread"
 
-@dataclass 
-class PriceSeries(Serializable):
-    prices: dict[str, BaseUnderlying] | None = field(default_factory=dict)
 
+@dataclass
+class PriceSeries(Serializable):
+    tick: str
+    prices: dict[str, BaseUnderlying] | None = field(default_factory=dict)
+     
     def add(self, price_quote: BaseUnderlying) -> None:
         if price_quote is None:
             return
         if price_quote.date is None:
             return
         key = price_quote.date.to_iso()
-        self.prices[key] = price_quote   
+        self.prices[key] = price_quote
 
     def get(self, date: DateObj) -> BaseUnderlying | None:
         return self.prices.get(date.to_iso(), None)
-    
+
     def __post_init__(self):
         if self.prices is None:
             self.prices = {}
 
-        self.prices = {
-            k: v for k, v in self.prices.items()
-            if v is not None
-        }
+        self.prices = {k: v for k, v in self.prices.items() if v is not None}
 
     @classmethod
     def from_dict(cls, d):
-        prices_raw = d.get("prices", {})
-        prices = {k: BaseUnderlying.from_dict(v) for k, v in prices_raw.items()}
-        return cls(prices=prices)
-        
+        prices_raw = d.get("prices", {}) or {}
+        tick = d.get("tick", "")
+        prices = {
+            k: infer_underlying_type(v).from_dict(v) if v is not None else None
+            for k, v in prices_raw.items()
+        }
+        return cls(prices=prices, tick=tick)
+
+
 @dataclass
 class Equity(Serializable):
     date: DateObj
     value: float
-    accounting_convention: AccountingConvention 
-    parent_trade: 'Trade' | None = None
-    
+    accounting_convention: AccountingConvention
+    parent_trade: "Trade" | None = None
+
+
 @dataclass
 class Cashflow(Serializable):
     date: DateObj
     amount: float
-    accounting_convention: AccountingConvention 
-    parent_trade: 'Trade' | None = None
+    accounting_convention: AccountingConvention
+    parent_trade: "Trade" | None = None
 
-@dataclass 
+
+@dataclass
 class BaseTradeFeatures(ABC):
     pass
+
 
 @dataclass
 class EntryData(Serializable):
@@ -85,16 +94,17 @@ class EntryData(Serializable):
     position_type: PositionType
     price_series: PriceSeries
     exit_date: DateObj
+    tick: str 
     position_size: float = 1.0
     features: BaseTradeFeatures | None = None
-
-
+    
 @dataclass(frozen=True)
 class Snapshot(Serializable):
     date: DateObj
     total_equity: float
     total_cash: float
     trade_equities: Dict[Trade, Equity]
+
 
 @dataclass
 class BackTestResult(Serializable):
@@ -105,3 +115,4 @@ class BackTestResult(Serializable):
     volatility: float
     total_return: float
     cagr: float
+    dates: List[DateObj]

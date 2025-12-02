@@ -1,54 +1,109 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from abc import ABC
 from enum import Enum
-from typing import Optional
+import pickle
+import sys
+from typing import Optional, Type
 
 from .base import Serializable
 from .date import DateObj
+
 
 @dataclass
 class BaseUnderlying(Serializable, ABC):
     bid: float
     ask: float
     volume: float
-    date: 'DateObj'
+    date: "DateObj"
     tick: str
+
+    @classmethod
+    def from_serialized_dict(cls, d: dict):
+        """Dispatch to the correct subclass using the embedded underlying_type tag."""
+        return infer_underlying_type(d).from_dict(d)
+
 
 class OptionType(str, Enum):
     CALL = "call"
     PUT = "put"
 
+
+class UnderlyingType(str, Enum):
+    OPTION = "Option"
+    FUTURE = "Future"
+    SPOT = "Spot"
+
+
 @dataclass
 class Spot(BaseUnderlying):
+    underlying_type: UnderlyingType = UnderlyingType.SPOT
     pass
+
 
 @dataclass
 class Future(BaseUnderlying):
+    underlying_type: UnderlyingType = UnderlyingType.FUTURE
     pass
+
 
 @dataclass
 class Option(BaseUnderlying):
     # --- Required Fields --- #
     option_type: OptionType
-    strike: float  
-    expiry: DateObj   
+    strike: float
+    expiry: DateObj
 
     # --- Optional Fields --- #
-    iv: Optional[float] = field(default=None)   
-    underlying: Optional[BaseUnderlying] = field(default=None)   
-    rfr: Optional[float] = field(default=None)       
+    iv: Optional[float] = field(default=None)
+    underlying: Optional[BaseUnderlying] = field(default=None)
+    rfr: Optional[float] = field(default=None)
     delta: Optional[float] = field(default=None)
     gamma: Optional[float] = field(default=None)
     vega: Optional[float] = field(default=None)
     theta: Optional[float] = field(default=None)
-    rho:   Optional[float] = field(default=None)
+    rho: Optional[float] = field(default=None)
 
+    # --- Internal Fields --- #
+    underlying_type: UnderlyingType = UnderlyingType.OPTION
 
     def __hash__(self) -> int:
         return hash((self.option_type, self.strike, self.expiry, self.date))
-    
 
-    
+
+def infer_underlying_type(d: dict) -> Type["BaseUnderlying"]:
+    """
+    Heuristically choose the concrete BaseUnderlying subclass for a serialized dict.
+    Prefer the explicit 'underlying_type' tag when present (Enum, string, or pickled bytes),
+    otherwise fall back to structural hints.
+    """
+    if not isinstance(d, dict):
+        return BaseUnderlying
+
+    tag = d.get("underlying_type")
+
+    # unwrap common serialized forms of the tag
+    if isinstance(tag, (bytes, bytearray)):
+        try:
+            tag = pickle.loads(tag)
+        except Exception:
+            tag = None
+
+    if isinstance(tag, str):
+        try:
+            tag = UnderlyingType(tag)
+        except ValueError:
+            tag = None
+
+    if isinstance(tag, UnderlyingType):
+        # dynamic: map the enum's value to the class object in this module
+        cls_name = tag.value
+        cls = getattr(sys.modules[__name__], cls_name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseUnderlying):
+            return cls
+
+    # structural fallback
+    if {"option_type", "strike", "expiry"} <= d.keys():
+        return Option
+    return BaseUnderlying

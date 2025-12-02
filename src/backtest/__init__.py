@@ -9,5 +9,5 @@ __all__ = [
     "PositionBase",
     "market_dates",
     "Exchange",
-    "BackTestConfig"
+    "BackTestConfig",
 ]

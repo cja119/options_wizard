@@ -16,14 +16,15 @@ class DateObj(Serializable):
     # --- Conversion Methods --- #
     def to_datetime(self):
         from datetime import datetime
+
         return datetime(self.year, self.month, self.day)
-    
+
     def to_pl(self) -> pl.Date:
         return pl.date(self.year, self.month, self.day)
 
     def to_iso(self) -> str:
         return self.__str__()
-    
+
     def to_timestamp(self):
         return self.to_datetime().timestamp()
 
@@ -42,16 +43,16 @@ class DateObj(Serializable):
 
         dt = datetime.fromtimestamp(ts)
         return DateObj(dt.year, dt.month, dt.day)
-    
+
     @staticmethod
     def from_pl(date: pl.Date) -> "DateObj":
         return DateObj(year=date.year, month=date.month, day=date.day)
-    
+
     @staticmethod
     def from_iso(date_str: str) -> "DateObj":
         year, month, day = map(int, date_str.split("-"))
         return DateObj(year, month, day)
-    
+
     @classmethod
     def from_dict(cls, value):
         return cls.from_iso(value)
@@ -81,5 +82,3 @@ class DateObj(Serializable):
 
     def __repr__(self):
         return f"DateObj(year={self.year}, month={self.month}, day={self.day})"
-
-

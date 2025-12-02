@@ -1,5 +1,5 @@
 from .manager import Pipeline, SaveFrames, wrap_fn
-from .types import FuncType, DataType, OutputType, StratType, ModelType
+from .types import FuncType, DataType, OutputType, StratType, ModelType, SaveType
 
 __all__ = [
     "Pipeline",
@@ -10,4 +10,5 @@ __all__ = [
     "StratType",
     "ModelType",
     "FuncType",
+    "SaveType",
 ]

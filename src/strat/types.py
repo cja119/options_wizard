@@ -20,7 +20,12 @@ from data.contract import *
 SAVE_PATH: Path = Path(os.getcwd()) / "tmp"
 
 
-class FuncType(Enum):
+class SaveType(str, Enum):
+    PICKLE: str = "pickle"
+    PARQUET: str = "parquet"
+
+
+class FuncType(str, Enum):
     LOAD = "load_function"
     DATA = "data_function"
     OUTPUT = "output_function"
@@ -49,23 +54,46 @@ class BaseType(ABC):
     def __call__(self) -> None | pl.DataFrame:
         return self._data
 
-    def save(self) -> None:
-        save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
-        if save_path.parent.exists() is False:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-        self._data.write_parquet(save_path)
+    def save(self, save_type: SaveType = SaveType.PARQUET) -> None:
+        if save_type == SaveType.PARQUET:
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
+            if save_path.parent.exists() is False:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+            self._data.write_parquet(save_path)
+        elif save_type == SaveType.PICKLE:
+            import dill
+
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.pkl"
+            if save_path.parent.exists() is False:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+            dill.dump(self, open(save_path, "wb"))
         return None
-    
+
     def isempty(self) -> bool:
-        return self._data is None or self._data.is_empty()
+        if self._data is None:
+            return True
+        if isinstance(self._data, pl.DataFrame):
+            return self._data.is_empty()
+        if isinstance(self._data, (list, Deque)):
+            return len(self._data) == 0
+        else:
+            return False
 
     @classmethod
-    def load(cls, tick: str) -> BaseType:
-        load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
-        if load_path.exists() is False:
-            return cls(data=None, tick=tick)
-        data = pl.read_parquet(load_path)
-        return cls(data=data, tick=tick)
+    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET) -> BaseType:
+        if save_type == SaveType.PARQUET:
+            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
+            if load_path.exists() is False:
+                return cls(data=None, tick=tick)
+            data = pl.read_parquet(load_path)
+            return cls(data=data, tick=tick)
+        elif save_type == SaveType.PICKLE:
+            import dill
+
+            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.pkl"
+            if load_path.exists() is False:
+                return cls(data=None, tick=tick)
+            return dill.load(open(load_path, "rb"))
 
     def _from_list(self, data: List | Deque) -> pl.DataFrame:
         raise NotImplementedError("Subclasses must implement _from_list method")
@@ -101,17 +129,25 @@ class StratType(BaseType):
     dc_type = EntryData
 
     @override
-    def save(self) -> None:
-        save_path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
-        save_path.parent.mkdir(parents=True, exist_ok=True)
+    def save(self, save_type: SaveType = SaveType.PARQUET) -> None:
+        if save_type == SaveType.PARQUET:
+            save_path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
+            save_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if self._data is None:
-            pl.DataFrame({"entry": []}).write_parquet(save_path)
-            return
+            if self._data is None:
+                pl.DataFrame({"entry": []}).write_parquet(save_path)
+                return
 
-        rows = [json.dumps(row) for row in self._data]
-        df = pl.DataFrame({"entry": rows})
-        df.write_parquet(save_path)
+            rows = [json.dumps(row) for row in self._data]
+            df = pl.DataFrame({"entry": rows})
+            df.write_parquet(save_path)
+        elif save_type == SaveType.PICKLE:
+            import dill
+
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.pkl"
+            if save_path.parent.exists() is False:
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+            dill.dump(self, open(save_path, "wb"))
 
     @override
     def __add__(self, other: StratType) -> StratType:
@@ -124,21 +160,28 @@ class StratType(BaseType):
 
     @override
     @classmethod
-    def load(cls, tick: str):
-        path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
-        if not path.exists():
-            return cls(data=None, tick=tick)
+    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET) -> StratType:
+        if save_type == SaveType.PARQUET:
+            path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
+            if not path.exists():
+                return cls(data=None, tick=tick)
 
-        df = pl.read_parquet(path)
-        entries = df["entry"].to_list()
+            df = pl.read_parquet(path)
+            entries = df["entry"].to_list()
 
-        objs = []
-        for js in entries:
-            raw_dict = json.loads(js)
-            obj = cls.dc_type.from_dict(raw_dict)
-            objs.append(obj)
+            objs = []
+            for js in entries:
+                raw_dict = json.loads(js)
+                obj = cls.dc_type.from_dict(raw_dict)
+                objs.append(obj)
 
-        return cls(data=objs, tick=tick)
+            return cls(data=objs, tick=tick)
+        elif save_type == SaveType.PICKLE:
+            import dill
+
+            if SAVE_PATH.exists() is False:
+                return cls(data=None, tick=tick)
+            return dill.load(open(SAVE_PATH / f"{cls._name}_{tick}.pkl", "rb"))
 
     def reconstruct(self, wrapper=None):
         if self._data is None:

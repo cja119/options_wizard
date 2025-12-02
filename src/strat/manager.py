@@ -11,6 +11,7 @@ from .types import (
     OutputType,
     StratType,
     ModelType,
+    SaveType,
 )
 
 FNS_SIG = List[Tuple[Callable, Dict[str, Any]]]
@@ -22,11 +23,14 @@ def wrap_fn(
     kwargs: Dict[str, Any] = None,
     depends_on: List[Callable] = None,
 ) -> Callable:
+
+    # --- Default Arguments --- #
     if kwargs is None:
         kwargs = {}
     if depends_on is None:
         depends_on = []
 
+    # --- Decorator Definition --- #
     def decorator(function: Callable) -> Callable:
         function._wrap = sig
 
@@ -35,24 +39,39 @@ def wrap_fn(
             raise ValueError(
                 "If 'depends_on' is specified, a 'pipeline' must also be provided."
             )
-        if pipeline is not None:
-            for dep in depends_on:
-                if not pipeline.isin(dep):
-                    pipeline(dep, **kwargs)
-            pipeline(function, **kwargs)
 
         # -- Return the original function -- #
         @wraps(function)
         def wrapper(*args, **fkwargs):
-            result = function(*args, **fkwargs) 
+            result = function(*args, **fkwargs)
             if result.isempty():
                 return None
             return result
+
+        # Mirror the signature metadata on the wrapper so pipeline checks work
+        wrapper._wrap = sig  # type: ignore[attr-defined]
+
+        # -- Pipeline Dependency Handling -- #
+        if pipeline is not None:
+            for dep in depends_on:
+                if not pipeline.isin(dep):
+                    pipeline(dep, **kwargs)
+            # Register the wrapper (not the raw function) to avoid double adds
+            pipeline(wrapper, **kwargs)
+
         return wrapper
+
     return decorator
 
+
 class SingleTickProcessor:
-    def __init__(self, tick: str, functions: FNS_SIG, saves: List[SaveFrames]) -> None:
+    def __init__(
+        self,
+        tick: str,
+        functions: FNS_SIG,
+        saves: List[SaveFrames],
+        save_type: SaveType,
+    ) -> None:
         self._tick = tick
         self._functions = functions
         self._data: DataType = DataType(tick=tick)
@@ -61,6 +80,7 @@ class SingleTickProcessor:
         self._model: ModelType = ModelType(tick=tick)
         self._saves: List[SaveFrames] = saves
         self._break: bool = False
+        self._save_type: SaveType = save_type
 
     # --- External Interface --- #
     def run(self) -> None:
@@ -70,7 +90,9 @@ class SingleTickProcessor:
             try:
                 self._execute_function(func, kwargs)
             except Exception as e:
-                print(f"Error executing function '{func.__name__}' for tick '{self._tick}': {e}")
+                print(
+                    f"Error executing function '{func.__name__}' for tick '{self._tick}': {e}"
+                )
                 self._exit()
             if self._break:
                 break
@@ -81,7 +103,7 @@ class SingleTickProcessor:
     # --- Internal Methods --- #
     def _exit(self) -> None:
         self._break = True
-    
+
     def _execute_function(self, function: Callable, kwargs: Dict[str, Any]) -> None:
 
         if function._wrap == FuncType.LOAD:
@@ -121,13 +143,13 @@ class SingleTickProcessor:
 
     def _save(self) -> None:
         if SaveFrames.DATA in self._saves:
-            self._data.save()
+            self._data.save(self._save_type)
         if SaveFrames.OUTPUT in self._saves:
-            self._output.save()
+            self._output.save(self._save_type)
         if SaveFrames.STRAT in self._saves:
-            self._strat.save()
+            self._strat.save(self._save_type)
         if SaveFrames.MODEL in self._saves:
-            self._model.save()
+            self._model.save(self._save_type)
         return None
 
 
@@ -140,11 +162,15 @@ class SaveFrames(Enum):
 
 class Pipeline:
     def __init__(
-        self, universe, saves: None | List[SaveFrames] | SaveFrames = None
+        self,
+        universe,
+        saves: None | List[SaveFrames] | SaveFrames = None,
+        save_type: SaveType = SaveType.PARQUET,
     ) -> None:
         self.universe = universe
         self._functions: Dict[str, FNS_SIG] = {tick: [] for tick in universe.ticks}
-        self._set_saves(saves)
+        self._set_saves(saves),
+        self._save_type: SaveType = save_type
 
     # --- Run the strategy pipeline ---
     def run(self) -> None:
@@ -157,9 +183,11 @@ class Pipeline:
 
     def isin(self, function: Callable) -> bool:
         self._signature_check(function)
+        targets = {function, getattr(function, "__wrapped__", None)}
         for tick in self.universe.ticks:
-            if any(func == function for func, _ in self._functions[tick]):
-                return True
+            for func, _ in self._functions[tick]:
+                if func in targets or getattr(func, "__wrapped__", None) in targets:
+                    return True
         return False
 
     # --- Internal Methods --- #
@@ -168,11 +196,16 @@ class Pipeline:
             self._run_single(tick)
 
     def _run_single(self, tick: str) -> None:
-        processor = SingleTickProcessor(tick, self._functions[tick], self._saves)
+        processor = SingleTickProcessor(
+            tick, self._functions[tick], self._saves, self._save_type
+        )
         processor.run()
 
     def _signature_check(self, function: Callable) -> None:
-        assert hasattr(function, "_wrap"), (
+        has_wrap = hasattr(function, "_wrap") or hasattr(
+            getattr(function, "__wrapped__", None), "_wrap"
+        )
+        assert has_wrap, (
             f"Function '{function.__name__}' is missing a signature decorator. "
             "Please use one of the following decorators: "
             "@wrap(FuncType.LOAD), @wrap(FuncType.DATA), "

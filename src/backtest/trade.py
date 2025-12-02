@@ -14,6 +14,7 @@ from data.trade import (
     PositionType,
 )
 
+from data.date import DateObj
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
@@ -36,6 +37,9 @@ class Trade:
 
     # ---- External Interface ---- #
     def __call__(self, date: DateObj) -> Tuple[Equity | None, Cashflow | None]:
+
+        if date not in self.entry_data.price_series.prices:
+            date = self._nearest_date_below(date)
 
         if not self._live_condition(date):
             return None, None
@@ -68,6 +72,7 @@ class Trade:
         )
 
     def close(self, date: DateObj) -> Tuple[Equity, Cashflow]:
+        date = self._nearest_date_above(date)
         self.entry_data.exit_date = date
         equity, cashflow = self(date)
         return equity, cashflow
@@ -204,3 +209,25 @@ class Trade:
         self._closed = False
 
         return cashflow
+
+    def _nearest_date_below(self, date: DateObj, cycl_break: bool = False) -> DateObj:
+        if date not in self.entry_data.price_series.prices:
+            date = max(
+                DateObj.from_iso(d)
+                for d in self.entry_data.price_series.prices.keys()
+                if DateObj.from_iso(d) <= date
+            )
+            if date is None and not cycl_break:
+                return self._nearest_date_above(date, cycl_break=True)
+        return date
+
+    def _nearest_date_above(self, date: DateObj, cycl_break: bool = False) -> DateObj:
+        if date not in self.entry_data.price_series.prices:
+            date = min(
+                DateObj.from_iso(d)
+                for d in self.entry_data.price_series.prices.keys()
+                if DateObj.from_iso(d) >= date
+            )
+            if date is None and not cycl_break:
+                return self._nearest_date_below(date, cycl_break=True)
+        return date

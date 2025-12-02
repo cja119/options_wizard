@@ -112,7 +112,7 @@ class PositionBase(ABC):
         for trade in live_trades:
             if trade in self._drop_trades:
                 continue
-            
+
             equity, cashflow = trade(date)
 
             if cashflow is not None:

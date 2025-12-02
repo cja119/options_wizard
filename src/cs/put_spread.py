@@ -66,8 +66,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             data = data.filter(pl.col("trade_date") <= max_date)
 
         return ow.DataType(data, tick)
-    
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def in_universe(data: ow.DataType, **kwargs) -> ow.DataType:
         """Marks whether each row is in the universe."""
@@ -77,7 +76,6 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         import polars as pl
         import pandas as pd
         from pathlib import Path
-
 
         load_dotenv()
         n_const = kwargs.get("n_const", 50)
@@ -99,7 +97,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             index_df = pd.read_csv(
                 os.getenv("INDEX_CONSTITUENTS_PATH"), na_values=na_vals
             )
-            
+
             mktcap_df = pd.read_csv(os.getenv("MKT_CAP_PATH"), na_values=na_vals)
 
             index_df = index_df.drop(columns=index_df.columns[0])
@@ -155,22 +153,18 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         )
         in_universe_mask = top_n_per_date.apply(lambda tickers: tick in tickers)
 
-        universe_map = (
-            pl.from_pandas(
-                in_universe_mask.rename("in_universe")
-                .reset_index()
-                .rename(columns={"index": "trade_date"})
-            )
-            .with_columns(pl.col("trade_date").dt.date())
+        universe_map = pl.from_pandas(
+            in_universe_mask.rename("in_universe")
+            .reset_index()
+            .rename(columns={"index": "trade_date"})
+        ).with_columns(pl.col("trade_date").dt.date())
+
+        df_out = df.join(universe_map, on="trade_date", how="left").with_columns(
+            pl.col("in_universe").fill_null(False)
         )
 
-        df_out = (
-            df.join(universe_map, on="trade_date", how="left")
-            .with_columns(pl.col("in_universe").fill_null(False))
-        )
-        
         return ow.DataType(df_out, tick)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def filter_gaps(data: ow.DataType, **kwargs) -> ow.DataType:
         import polars as pl
@@ -319,13 +313,14 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         merged_df = df.join(hist_pl, on="trade_date", how="left")
 
         return ow.DataType(merged_df, tick)
-
+    
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
         """Scales data for stock splits using Polars expressions."""
         # -- Imports --
         import yfinance as yf
         import polars as pl
+        import pandas as pd
 
         # -- Get Splits --
         tick = kwargs.get("tick", "")
@@ -337,16 +332,22 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             return data
 
         # -- Process Splits --
+        df = data()
         splits = splits.reset_index().rename(
             columns={"index": "Date", "Stock Splits": "Split"}
         )
+        
+        # --- Handling df lims ---
         splits["Date"] = splits["Date"].dt.tz_localize(None)
         splits = splits.sort_values("Date")
+        max_date = df.select(pl.col("trade_date").max()).item()
+        splits = splits[splits["Date"] <= pd.to_datetime(max_date)]
+        
+        # --- Columns to change ---
         cols_to_reduce = ["last_trade_price", "bid_price", "ask_price", "strike"]
         cols_to_increase = ["volume", "open_interest"]
 
         # -- Apply Splits --
-        df = data()
         for date, ratio in zip(splits["Date"], splits["Split"]):
             df = df.with_columns(
                 [
@@ -367,8 +368,6 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
         return ow.DataType(df, tick)
 
-
-
     @ow.wrap_fn(
         ow.FuncType.DATA,
         depends_on=[
@@ -378,7 +377,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             filter_out,
             underlying_close,
             scale_splits,
-            in_universe
+            in_universe,
         ],
     )
     def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:

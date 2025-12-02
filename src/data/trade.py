@@ -38,7 +38,7 @@ class TransactionCostModel(str, Enum):
 class PriceSeries(Serializable):
     tick: str
     prices: dict[str, BaseUnderlying] | None = field(default_factory=dict)
-     
+
     def add(self, price_quote: BaseUnderlying) -> None:
         if price_quote is None:
             return
@@ -94,10 +94,11 @@ class EntryData(Serializable):
     position_type: PositionType
     price_series: PriceSeries
     exit_date: DateObj
-    tick: str 
+    tick: str
     position_size: float = 1.0
     features: BaseTradeFeatures | None = None
-    
+
+
 @dataclass(frozen=True)
 class Snapshot(Serializable):
     date: DateObj

@@ -1,15 +1,31 @@
+"""
+Methods for put spread strategy
+"""
+
 from typing import Tuple, List, Dict, override
 import options_wizard as ow
 from functools import partial
 import numpy as np
 
 
-class FixedHold1MnNotional(ow.PositionBase):
+class FixedHoldNotional(ow.PositionBase):
+    _carry = 0.0
 
     @override
     def size_function(self, entering_trades: List[ow.Trade]) -> Dict[ow.Trade, float]:
         sizes = {}
-        notional = 1_000_000.0 * (1 / 12)
+
+        protected_notional = self._kwargs.get("protected_notional", 1_000_000)
+        hold_period = self._kwargs.get("hold_period", 30)
+        notional = protected_notional * (hold_period / 365)
+
+        if not entering_trades:  # -- Avoid div 0 errors --
+            self._carry += notional
+            return sizes
+        else:
+            notional += self._carry
+            self._carry = 0.0
+
         notional_dem = 0.0
         for trade in entering_trades:
             if trade.entry_data.position_type == ow.PositionType.SHORT:
@@ -23,7 +39,11 @@ class FixedHold1MnNotional(ow.PositionBase):
                     short_delta * trade.entry_data.position_size * underlying_price
                 )
         for trade in entering_trades:
-            sizes[trade] = abs(notional / notional_dem)
+            if notional_dem == 0.0:
+                sizes[trade] = 0.0
+                self._carry += notional
+            else:
+                sizes[trade] = abs(notional / notional_dem)
         return sizes
 
     @override
@@ -164,6 +184,20 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         )
 
         return ow.DataType(df_out, tick)
+
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
+    def perc_spread(data: ow.DataType, **kwargs) -> ow.DataType:
+        """Adds percentage spread column to data."""
+        # -- Imports --
+        import polars as pl
+
+        df = data().with_columns(
+            (
+                (pl.col("ask_price") - pl.col("bid_price"))
+                / ((pl.col("ask_price") + pl.col("bid_price")) / 2)
+            ).alias("perc_spread")
+        )
+        return ow.DataType(df, kwargs.get("tick", ""))
 
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def filter_gaps(data: ow.DataType, **kwargs) -> ow.DataType:
@@ -313,7 +347,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         merged_df = df.join(hist_pl, on="trade_date", how="left")
 
         return ow.DataType(merged_df, tick)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
         """Scales data for stock splits using Polars expressions."""
@@ -336,13 +370,11 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         splits = splits.reset_index().rename(
             columns={"index": "Date", "Stock Splits": "Split"}
         )
-        
-        # --- Handling df lims ---
+
+        # --- Handling df  ---
         splits["Date"] = splits["Date"].dt.tz_localize(None)
         splits = splits.sort_values("Date")
-        max_date = df.select(pl.col("trade_date").max()).item()
-        splits = splits[splits["Date"] <= pd.to_datetime(max_date)]
-        
+
         # --- Columns to change ---
         cols_to_reduce = ["last_trade_price", "bid_price", "ask_price", "strike"]
         cols_to_increase = ["volume", "open_interest"]
@@ -375,6 +407,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             filter_gaps,
             ttms,
             filter_out,
+            perc_spread,
             underlying_close,
             scale_splits,
             in_universe,
@@ -393,6 +426,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         delta_otm = kwargs.get("delta_otm", 0.15)
         otm_ratio = kwargs.get("otm_ratio", 2)
         hold_period = kwargs.get("hold_period", 30)
+        delta_tol = kwargs.get("delta_tol", 0.02)
         call_put = kwargs.get("call_put", "p")
         tick = kwargs.get("tick", "")
 
@@ -401,8 +435,8 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         eligible = df.filter(
             (pl.col("call_put") == call_put)
             & (pl.col("ttm").is_between(lower_ttm, upper_ttm))
-            & ((pl.col("delta").abs()) <= delta_atm)
-            & ((pl.col("delta").abs()) >= delta_otm)
+            & ((pl.col("delta").abs()) <= delta_atm + delta_tol)
+            & ((pl.col("delta").abs()) >= delta_otm - delta_tol)
             & (pl.col("n_missing") == 0)
             & (pl.col("days_until_last_trade") > hold_period)
             & (pl.col("in_universe") == True)
@@ -411,9 +445,8 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         base_cols = [c for c in df.columns if c not in ("entered", "position")]
 
         atm = (
-            eligible.with_columns(
-                (pl.col("delta").abs() - delta_atm).abs().alias("atm_rank")
-            )
+            eligible.filter(pl.col("delta").abs() >= delta_atm - delta_tol)
+            .with_columns(pl.col("perc_spread").abs().alias("atm_rank"))
             .sort(["trade_date", "atm_rank"])
             .group_by("trade_date")
             .head(1)
@@ -422,8 +455,8 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         )
 
         otm = (
-            eligible.filter(pl.col("delta").abs() > delta_otm)
-            .with_columns((pl.col("delta").abs() - delta_otm).abs().alias("otm_rank"))
+            eligible.filter(pl.col("delta").abs() < delta_otm + delta_tol)
+            .with_columns(pl.col("perc_spread").abs().alias("otm_rank"))
             .sort(["trade_date", "otm_rank"])
             .group_by("trade_date")
             .head(1)

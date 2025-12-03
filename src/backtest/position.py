@@ -5,7 +5,7 @@ Position Management Module
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, TYPE_CHECKING, Tuple
 
 from data.trade import Cashflow, Snapshot
@@ -21,6 +21,7 @@ class BackTestConfig(ABC):
     starting_cash: float
     start_date: DateObj
     end_date: DateObj | None = None
+    kwargs: Dict = field(default_factory=dict)
 
 
 class PositionBase(ABC):
@@ -31,6 +32,7 @@ class PositionBase(ABC):
         self._end_date: DateObj | None = config.end_date
         self.starting_cash: float = config.starting_cash
         self._drop_trades: list[Trade] = []
+        self._kwargs = config.kwargs
 
         self._snapshot = Snapshot(
             date=config.start_date,
@@ -104,6 +106,8 @@ class PositionBase(ABC):
         total_cash = self._snapshot.total_cash
         if exit_cashflows is not None:
             for cashflow in exit_cashflows:
+                if cashflow is None:
+                    continue
                 total_cash += cashflow.amount
 
         trade_equities = self._snapshot.trade_equities.copy()

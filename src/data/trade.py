@@ -13,6 +13,7 @@ from data.date import DateObj, Serializable
 from data.contract import BaseUnderlying, infer_underlying_type
 from .base import Serializable
 
+
 if TYPE_CHECKING:
     from .date import DateObj
     from backtest.trade import Trade

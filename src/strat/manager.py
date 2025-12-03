@@ -70,7 +70,8 @@ class SingleTickProcessor:
         tick: str,
         functions: FNS_SIG,
         saves: List[SaveFrames],
-        save_type: SaveType,
+        save_type: SaveType | None = None,
+        return_type: List[FuncType] | None = None,
     ) -> None:
         self._tick = tick
         self._functions = functions
@@ -80,7 +81,8 @@ class SingleTickProcessor:
         self._model: ModelType = ModelType(tick=tick)
         self._saves: List[SaveFrames] = saves
         self._break: bool = False
-        self._save_type: SaveType = save_type
+        self._save_type: SaveType | None = save_type
+        self._return_type: List[FuncType] | None = return_type
 
     # --- External Interface --- #
     def run(self) -> None:
@@ -98,7 +100,8 @@ class SingleTickProcessor:
                 break
         if not self._break:
             self._save()
-        pass
+
+        return self._return()
 
     # --- Internal Methods --- #
     def _exit(self) -> None:
@@ -142,6 +145,10 @@ class SingleTickProcessor:
                 self._exit()
 
     def _save(self) -> None:
+        if self._saves and not self._save_type:
+            raise ValueError(
+                "Save type must be specified if saving any frames in the pipeline."
+            )
         if SaveFrames.DATA in self._saves:
             self._data.save(self._save_type)
         if SaveFrames.OUTPUT in self._saves:
@@ -151,6 +158,24 @@ class SingleTickProcessor:
         if SaveFrames.MODEL in self._saves:
             self._model.save(self._save_type)
         return None
+
+    def _return(self) -> Any:
+        ret_vals = []
+        for ret_type in self._return_type:
+            if ret_type == FuncType.DATA:
+                ret_vals.append(self._data)
+            elif ret_type == FuncType.OUTPUT:
+                ret_vals.append(self._output)
+            elif ret_type == FuncType.STRAT:
+                ret_vals.append(self._strat)
+            elif ret_type == FuncType.MODEL:
+                ret_vals.append(self._model)
+        if len(ret_vals) == 1:
+            return ret_vals[0]
+        elif len(ret_vals) > 1:
+            return tuple(ret_vals)
+        else:
+            return None
 
 
 class SaveFrames(Enum):
@@ -165,12 +190,19 @@ class Pipeline:
         self,
         universe,
         saves: None | List[SaveFrames] | SaveFrames = None,
-        save_type: SaveType = SaveType.PARQUET,
+        save_type: SaveType | None = SaveType.PARQUET,
+        return_type: FuncType | None | List[FuncType] = None,
     ) -> None:
         self.universe = universe
         self._functions: Dict[str, FNS_SIG] = {tick: [] for tick in universe.ticks}
         self._set_saves(saves),
-        self._save_type: SaveType = save_type
+        self._save_type: SaveType | None = save_type
+        self._rets: Dict[str, Any] = {}
+        self._return_type: List[FuncType] = (
+            return_type
+            if isinstance(return_type, list)
+            else ([return_type] if return_type is not None else [])
+        )
 
     # --- Run the strategy pipeline ---
     def run(self) -> None:
@@ -190,16 +222,35 @@ class Pipeline:
                     return True
         return False
 
+    def outputs(
+        self, type: FuncType
+    ) -> List[DataType | OutputType | StratType | ModelType | None]:
+        strats = []
+        for tick in self.universe.ticks:
+            ret = self._rets[tick]
+            if type == FuncType.DATA:
+                strats.append(ret if isinstance(ret, DataType) else None)
+            elif type == FuncType.OUTPUT:
+                strats.append(ret if isinstance(ret, OutputType) else None)
+            elif type == FuncType.STRAT:
+                strats.append(ret if isinstance(ret, StratType) else None)
+            elif type == FuncType.MODEL:
+                strats.append(ret if isinstance(ret, ModelType) else None)
+        return strats
+
     # --- Internal Methods --- #
     def _run_pipeline(self) -> None:
         for tick in tqdm(self.universe.ticks):
-            self._run_single(tick)
+            self._rets[tick] = self._run_single(tick)  #
 
-    def _run_single(self, tick: str) -> None:
+    def _run_single(
+        self, tick: str
+    ) -> None | DataType | OutputType | StratType | ModelType | Tuple[Any, ...]:
         processor = SingleTickProcessor(
-            tick, self._functions[tick], self._saves, self._save_type
+            tick, self._functions[tick], self._saves, self._save_type, self._return_type
         )
-        processor.run()
+        rets = processor.run()
+        return rets
 
     def _signature_check(self, function: Callable) -> None:
         has_wrap = hasattr(function, "_wrap") or hasattr(

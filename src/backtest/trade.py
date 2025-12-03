@@ -16,6 +16,8 @@ from data.trade import (
 
 from data.date import DateObj
 
+SPREAD_CAPTURE = 0.75
+
 if TYPE_CHECKING:
     from ..data.date import DateObj
     from ..data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
@@ -96,6 +98,18 @@ class Trade:
         else:
             return 0.0
 
+    def _mid_price(self, price: BaseUnderlying) -> float:
+        return (price.bid + price.ask) / 2
+
+    def _half_spread_adj(self, price: BaseUnderlying, is_buy: bool) -> float:
+        if self.transaction_cost_model != TransactionCostModel.SPREAD:
+            return 0.0
+        half_spread = (price.ask - price.bid) / 2 * (1 - SPREAD_CAPTURE)
+        return half_spread if is_buy else -half_spread
+
+    def _execution_price(self, price: BaseUnderlying, is_buy: bool) -> float:
+        return self._mid_price(price) + self._half_spread_adj(price, is_buy)
+
     def _mtm_equity(self, date: DateObj) -> Equity:
         price: BaseUnderlying = self.entry_data.price_series.prices[date.to_iso()]
         equity = Equity(
@@ -113,7 +127,7 @@ class Trade:
     def _cash_equity(self, date: DateObj) -> Equity:
         price: BaseUnderlying = self.entry_data.price_series.prices[date.to_iso()]
         ps: float = self.entry_data.position_size
-        value: float = (price.bid + price.ask) / 2 * self._pos_sign * ps
+        value: float = self._mid_price(price) * self._pos_sign * ps
 
         equity = Equity(
             date=date,
@@ -142,15 +156,14 @@ class Trade:
         price: BaseUnderlying = self.entry_data.price_series.prices[
             self.entry_data.exit_date.to_iso()
         ]
-        tcs: float = self._calculate_tcs(price)
-
         if self.accounting_type == AccountingConvention.CASH:
             ps: float = self.entry_data.position_size
-            cashflow_amount = (
-                price.bid * ps - tcs if self._pos_sign > 0 else -price.ask * ps - tcs
-            )
+            is_buy = self._pos_sign < 0  # closing a short is a buy
+            exec_price = self._execution_price(price, is_buy=is_buy)
+            cashflow_amount = -exec_price * ps if is_buy else exec_price * ps
         elif self.accounting_type == AccountingConvention.MTM:
-            cashflow_amount = self._price_exposure(price) - self._entry_exposure
+            fees = self._calculate_tcs(price)
+            cashflow_amount = self._price_exposure(price) - self._entry_exposure - fees
 
         cashflow = Cashflow(
             date=self.entry_data.exit_date,
@@ -177,13 +190,14 @@ class Trade:
         return self
 
     def _cash_position(self, price: BaseUnderlying) -> float:
-        tcs: float = self._calculate_tcs(price)
         ps: float = self.entry_data.position_size
-        return -price.ask * ps - tcs if (self._pos_sign) > 0 else price.bid * ps - tcs
+        is_buy = self._pos_sign > 0
+        exec_price = self._execution_price(price, is_buy=is_buy)
+        return -exec_price * ps if is_buy else exec_price * ps
 
     def _price_exposure(self, price: BaseUnderlying) -> float:
         ps: float = self.entry_data.position_size
-        return (price.bid + price.ask) / 2 * self._pos_sign * ps
+        return self._mid_price(price) * self._pos_sign * ps
 
     def _initialize_trade(self) -> Cashflow:
 
@@ -196,7 +210,7 @@ class Trade:
 
         elif self.accounting_type == AccountingConvention.MTM:
             self._entry_exposure = self._price_exposure(price)
-            cashflow_amount = self._calculate_tcs(price)
+            cashflow_amount = -self._calculate_tcs(price)
 
         cashflow = Cashflow(
             date=self.entry_data.entry_date,

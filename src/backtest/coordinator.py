@@ -96,3 +96,7 @@ class BackTestCoordinator:
             for trade, equity in snapshot.trade_equities.items():
                 equity.underlying_trade = None
                 update_equity[trade] = equity
+
+    @staticmethod
+    def dk(d: DateObj):
+        return (d.year, d.month, d.day)

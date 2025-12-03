@@ -39,7 +39,7 @@ class BaseType(ABC):
     ) -> None:
         if isinstance(data, (list, Deque)):
             data = self._from_list(data)
-        self._data: None | pl.DataFrame = data
+        self._data: None | pl.DataFrame | pl.LazyFrame  = data
         self._tick: str = tick
 
     # --- Abstract Methods --- #
@@ -74,6 +74,8 @@ class BaseType(ABC):
             return True
         if isinstance(self._data, pl.DataFrame):
             return self._data.is_empty()
+        if isinstance(self._data, pl.LazyFrame):
+            return False
         if isinstance(self._data, (list, Deque)):
             return len(self._data) == 0
         else:

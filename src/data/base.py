@@ -5,6 +5,7 @@ Base class definitions for data objects
 import pickle
 from dataclasses import fields, is_dataclass
 from typing import get_origin, get_args, Union, get_type_hints, Dict
+from functools import lru_cache
 
 PRIMITIVES = (int, float, str, bool, type(None))
 
@@ -16,9 +17,14 @@ class Serializable:
             out[f.name] = self._encode(getattr(self, f.name))
         return out
 
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def cached_hints(tp):
+        return get_type_hints(tp)
+
     @classmethod
     def from_dict(cls, d):
-        hints = get_type_hints(cls)  # resolves forward refs into real types
+        hints = Serializable.cached_hints(cls)  # resolves forward refs into real types
         kwargs = {}
         for f in fields(cls):
             expected = hints.get(f.name, f.type)

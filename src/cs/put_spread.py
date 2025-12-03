@@ -48,15 +48,21 @@ class FixedHoldNotional(ow.PositionBase):
 
     @override
     def exit_trigger(
-        self, live_trades: List[ow.Trade], current_date: ow.DateObj
+        self, live_trades: List[ow.Trade], current_date: ow.DateObj, scheduled_exits: List[ow.Trade]
     ) -> Tuple[List[ow.Trade], List[ow.Cashflow]]:
         exit_cashflows = []
-        trades_to_close = []
+        trades_to_close = set()
         for trade in live_trades:
             if trade.days_open(current_date) >= 30:
                 _, cashflow = trade.close(current_date)
                 exit_cashflows.append(cashflow)
-                trades_to_close.append(trade)
+                trades_to_close.add(trade)
+
+        for trade in scheduled_exits:
+            if trade not in trades_to_close:
+                _, cashflow = trade.close(current_date)
+                exit_cashflows.append(cashflow)
+                trades_to_close.add(trade)
         return trades_to_close, exit_cashflows
 
 
@@ -80,8 +86,8 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         load_dotenv()
         tick = kwargs.get("tick", "")
         tick_path = os.getenv("TICK_PATH", "")
-        data = pl.read_parquet(os.path.join(tick_path, f"{tick}.parquet"))
-
+        data = pl.scan_parquet(os.path.join(tick_path, f"{tick}.parquet"))
+        
         if max_date is not None:
             data = data.filter(pl.col("trade_date") <= max_date)
 
@@ -156,9 +162,17 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             universe_frame.index = pd.to_datetime(universe_frame.index)
         universe_frame.index = pd.to_datetime(universe_frame.index).tz_localize(None)
 
-        df = data().with_columns(pl.col("trade_date").cast(pl.Date))
-        start_date = df.select(pl.col("trade_date").min()).item()
-        end_date = df.select(pl.col("trade_date").max()).item()
+        df = data()
+        if isinstance(df, pl.LazyFrame):
+            stats = df.select(
+                pl.col("trade_date").min().alias("min_td"),
+                pl.col("trade_date").max().alias("max_td"),
+            ).collect()
+            start_date = stats["min_td"][0]
+            end_date = stats["max_td"][0]
+        else:
+            start_date = df.select(pl.col("trade_date").min()).item()
+            end_date = df.select(pl.col("trade_date").max()).item()
 
         universe_frame = universe_frame.sort_index()
 
@@ -179,7 +193,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             .rename(columns={"index": "trade_date"})
         ).with_columns(pl.col("trade_date").dt.date())
 
-        df_out = df.join(universe_map, on="trade_date", how="left").with_columns(
+        df_out = df.join(universe_map.lazy(), on="trade_date", how="left").with_columns(
             pl.col("in_universe").fill_null(False)
         )
 
@@ -204,6 +218,8 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         import polars as pl
 
         df = data()
+        if isinstance(df, pl.LazyFrame):
+            df = df.collect()
 
         df = df.with_columns(pl.col("trade_date").cast(pl.Date))
         keys = ["call_put", "strike", "expiry_date"]
@@ -262,7 +278,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             (pl.col("end") - pl.col("trade_date")).alias("days_until_last_trade")
         )
 
-        return ow.DataType(df2, kwargs.get("tick", ""))
+        return ow.DataType(df2.lazy(), kwargs.get("tick", ""))
 
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def ttms(data: ow.DataType, **kwargs) -> ow.DataType:
@@ -324,8 +340,16 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
         # -- Download History --
         df = data()
-        start = df.select(pl.col("trade_date").min()).item()
-        end = df.select(pl.col("trade_date").max()).item()
+        if isinstance(df, pl.LazyFrame):
+            stats = df.select(
+                pl.col("trade_date").min().alias("min_td"),
+                pl.col("trade_date").max().alias("max_td"),
+            ).collect()
+            start = stats["min_td"][0]; end = stats["max_td"][0]
+            df = df.collect()  # so join with hist works
+        else:
+            start = df.select(pl.col("trade_date").min()).item()
+            end = df.select(pl.col("trade_date").max()).item()
         hist = ticker.history(
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),
@@ -346,7 +370,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
         merged_df = df.join(hist_pl, on="trade_date", how="left")
 
-        return ow.DataType(merged_df, tick)
+        return ow.DataType(merged_df.lazy(), tick)
 
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
     def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
@@ -442,7 +466,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             & (pl.col("in_universe") == True)
         )
 
-        base_cols = [c for c in df.columns if c not in ("entered", "position")]
+        base_cols = [c for c in df.collect_schema().names() if c not in ("entered", "position")]
 
         atm = (
             eligible.filter(pl.col("delta").abs() >= delta_atm - delta_tol)
@@ -468,7 +492,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
         entries = pl.concat([atm, otm], how="vertical")
 
-        df_out = df.join(entries, on=df.columns, how="left").with_columns(
+        df_out = df.join(entries.lazy(), on=df.columns if isinstance(df, pl.DataFrame) else df.collect_schema().names(), how="left").with_columns(
             [pl.col("entered").fill_null(False), pl.col("position").fill_null(0)]
         )
 
@@ -495,7 +519,7 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         def date_obj(dt):
             return DateObj(day=dt.day, month=dt.month, year=dt.year)
 
-        df = data()
+        df = data().collect()
         df = df.sort("trade_date")
 
         tick = kwargs.get("tick", "")

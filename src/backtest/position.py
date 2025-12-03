@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, TYPE_CHECKING, Tuple
+from typing import List, Dict, TYPE_CHECKING, Tuple, Set
 
 from data.trade import Cashflow, Snapshot
 from backtest.trade import Trade
@@ -33,6 +33,12 @@ class PositionBase(ABC):
         self.starting_cash: float = config.starting_cash
         self._drop_trades: list[Trade] = []
         self._kwargs = config.kwargs
+        self._active: list[Trade] = []
+        self._entries: list[Trade] = []
+        self._exits: list[Trade] = []
+        self._entry_idx = 0
+        self._exit_idx = 0
+        self._schedule_ready = False
 
         self._snapshot = Snapshot(
             date=config.start_date,
@@ -49,18 +55,16 @@ class PositionBase(ABC):
             self._trades.extend(trade)
 
     def __call__(self, date: DateObj) -> Snapshot:
-        # -- Update entries/exits --
-        entering_trades = self.trades_entering(date)
-        self._sizes |= self._size_entry(entering_trades)
+        if not self._schedule_ready: self._finalize_schedule()
+        
+        entering, scheduled_exit = self._advance_schedule(date)
+        self._sizes |= self._size_entry(entering)
 
-        # -- Process exits --
-        live_trades = self._trades_on(date)
-        trades_to_close, exit_cashflows = self.exit_trigger(live_trades, date)
-        self._update_closes(live_trades, trades_to_close)
+        trades_to_close, exit_cf = self.exit_trigger(self._active, date, scheduled_exit)
 
-        # -- Update equity --
-        snapshot = self._update(live_trades, date, exit_cashflows)
-
+        self._update_closes(self._active, trades_to_close)
+        snapshot = self._update(self._active, date, exit_cf)
+        
         return snapshot
 
     # ---- Abstract Methods ---- #
@@ -70,16 +74,29 @@ class PositionBase(ABC):
 
     @abstractmethod
     def exit_trigger(
-        self, live_trades: List[Trade], current_date: DateObj
+        self, live_trades: List[Trade], current_date: DateObj, scheduled_exits: Set[Trade]
     ) -> Tuple[List[Trade], List["Cashflow"]]:
         pass
 
     # ---- Internal Methods ---- #
+    def _advance_schedule(self, date):
+        key = (date.year, date.month, date.day)
+        entering, scheduled_exit = [], []
+        while self._entry_idx < len(self._entries) and self._entries[self._entry_idx]._entry_key == key:
+            t = self._entries[self._entry_idx]; self._active.append(t); entering.append(t); self._entry_idx += 1
+        while self._exit_idx < len(self._exits) and self._exits[self._exit_idx]._exit_key == key:
+            t = self._exits[self._exit_idx]
+            if t in self._active and not getattr(t, "_closed", False):
+                scheduled_exit.append(t)
+            self._exit_idx += 1
+        return entering, scheduled_exit
+
     def _update_closes(
-        self, live_trades: list[Trade], trades_to_close: list[Trade]
+        self, live_trades: list[Trade], trades_to_close: Set[Trade]
     ) -> None:
         for trade in trades_to_close:
-            live_trades.remove(trade)
+                if trade in live_trades:
+                    live_trades.remove(trade)
         self._drop_trades = trades_to_close
 
     def _size_entry(self, trades: List[Trade]) -> Dict[Trade, float]:
@@ -135,3 +152,14 @@ class PositionBase(ABC):
 
         self._snapshot = snapshot
         return snapshot
+
+    def _finalize_schedule(self):
+        def key(d): return (d.year, d.month, d.day)
+        for t in self._trades:
+            t._entry_key = key(t.entry_data.entry_date)
+            t._exit_key = key(t.entry_data.exit_date)
+        self._entries = sorted(self._trades, key=lambda t: t._entry_key)
+        self._exits = sorted(self._trades, key=lambda t: t._exit_key)
+        self._entry_idx = 0
+        self._exit_idx = 0
+        self._schedule_ready = True

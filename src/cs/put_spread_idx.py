@@ -36,59 +36,31 @@ OPT_DROP_MAP = [
 #     TOP-LEVEL LOGIC FUNCTIONS (IMPORTABLE ANYWHERE)
 # ===========================================================
 
-def load_data_logic(**kwargs) -> ow.DataType:
-    from .put_spread import load_data as ps_load_data
-    return ps_load_data(**kwargs)
-
-def earnings_dates_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    import yfinance as yf
-    import polars as pl
-
+def load_index_data_logic(**kwargs) -> ow.DataType:
+    load_dotenv()
     tick = kwargs.get("tick", "")
-    df = data()
+    idx_opt_path = os.getenv(f"{tick}".upper() + "_OPTIONS", "")
 
-    ticker = yf.Ticker(tick)
-    ed = ticker.get_earnings_dates(limit=100)
-    if ed is None or ed.empty:
-        raise ValueError(f"No earnings dates found for {tick}")
-
-    earns = (
-        pl.from_pandas(ed.reset_index()[["Earnings Date"]])
-        .rename({"Earnings Date": "earnings_date"})
-        .with_columns(pl.col("earnings_date").cast(pl.Date))
-        .sort("earnings_date")
-        .lazy()
-    )
+    if not idx_opt_path or not Path(idx_opt_path).is_file():
+        return pl.LazyFrame()
 
     df = (
-        df.with_columns(pl.col("trade_date").cast(pl.Date))
-          .sort("trade_date")
+        pl.scan_parquet(idx_opt_path)
+        .rename(OPT_RENAME_MAP)
+        .drop(OPT_DROP_MAP)
+        .with_columns(pl.col("bid_implied_volatility").alias("ask_implied_volatility"))
     )
 
-    # join earnings directly into df twice (no duplicating giant frames)
-    out = (
-        df
-        .join_asof(
-            earns,
-            left_on="trade_date",
-            right_on="earnings_date",
-            strategy="backward"
-        )
-        .rename({"earnings_date": "prev_ed"})
-        .join_asof(
-            earns,
-            left_on="trade_date",
-            right_on="earnings_date",
-            strategy="forward"
-        )
-        .rename({"earnings_date": "next_ed"})
-        .with_columns([
-            (pl.col("next_ed") - pl.col("trade_date")).dt.total_days().alias("days_to_next_earnings"),
-            (pl.col("trade_date") - pl.col("prev_ed")).dt.total_days().alias("days_since_last_earnings"),
-        ])
+    df = df.with_columns([
+        pl.col("trade_date").str.strptime(pl.Date, format="%d/%m/%Y", strict=False),
+        pl.col("expiry_date").str.strptime(pl.Date, format="%d/%m/%Y", strict=False)
+    ])
+
+    df = df.with_columns(
+        pl.col("call_put").str.to_lowercase()
     )
 
-    return ow.DataType(out, tick)
+    return ow.DataType(df, tick)
 
 
 def filter_out_logic(data: ow.DataType, **kwargs) -> ow.DataType:
@@ -100,21 +72,75 @@ def ttms_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     from .put_spread import ttms as ps_ttms
     return ps_ttms(data, **kwargs)
 
-def in_universe_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import in_universe as ps_in_universe
-    return ps_in_universe(data, **kwargs)
+def in_universe_dummy_logic(data: ow.DataType, **kwargs) -> ow.DataType:
+    tick = kwargs.get("tick", "")
+    df = data()
+    df = df.with_columns(pl.lit(True).alias("in_universe"))
+    return ow.DataType(df, tick=tick)
 
-def load_underlying_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import underlying_close as ps_load_underlying
-    return ps_load_underlying(data, **kwargs)
+def idx_futures_logic(data: ow.DataType, **kwargs) -> ow.DataType:
+
+    load_dotenv()
+    tick = kwargs.get("tick", "")
+    fut_path = os.getenv(f"{tick}".upper() + "_FUTURES", "")
+
+    if not fut_path or not Path(fut_path).is_file():
+        return data
+
+    fut = (
+        pl.scan_parquet(fut_path)
+        .rename({"date": "trade_date", "close": "underlying_close"})
+        .select(["trade_date", "underlying_close"])
+        )
+    
+    joined = data().join(fut, on="trade_date", how="left")
+    return ow.DataType(joined, tick)
+
+def vix_term_structure(data: ow.DataType, **kwargs) -> ow.DataType:
+    
+    from dotenv import load_dotenv
+    import os
+    import sys
+
+    load_dotenv()
+    path = os.getenv("VIX_FUTURES", "")
+    tick = kwargs.get("tick", "")
+
+    if not path or not Path(path).is_file():
+        raise FileNotFoundError("VIX futures data not found at specified path.")
+    
+    vix_fut = (
+            pl.scan_parquet(path)
+            .select(["trade_date", "UX1 Index", "UX3 Index", "UX6 Index"])
+            .rename({"UX1 Index": "1m_vix_fut", "UX3 Index": "3m_vix_fut", "UX6 Index": "6m_vix_fut"})
+        )
+    vix_fut = vix_fut.with_columns(
+            pl.col("trade_date").str.strptime(pl.Date, format="%d/%m/%Y", strict=False)
+        )
+
+    vix_fut = vix_fut.with_columns(
+            ((pl.col("6m_vix_fut") - pl.col("1m_vix_fut")) / 5).alias("grad")
+        )
+    vix_fut = vix_fut.with_columns(
+            ((pl.col("1m_vix_fut") + pl.col("6m_vix_fut") * (2/3) - pl.col("3m_vix_fut") * (1 - (2/3))) / (0.5*(2*3 + 2**2))).alias("curvature")
+    )
+
+    vix_fut = vix_fut.collect()
+
+    joined = data().join(vix_fut, on="trade_date", how="left")
+
+    return ow.DataType(joined, tick=tick)
+
 
 def scale_splits_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     from .put_spread import scale_splits as ps_scale_splits
     return ps_scale_splits(data, **kwargs)
 
+
 def perc_spread_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     from .put_spread import perc_spread as ps_perc_spread
     return ps_perc_spread(data, **kwargs)
+
 
 def ratio_spread_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     from .put_spread import ratio_spread as ps_ratio_spread
@@ -133,7 +159,7 @@ def filter_gaps_logic(data: ow.DataType, **kwargs) -> ow.DataType:
 #     PIPELINE REGISTRATION (BOTTOM OF FILE)
 # ===========================================================
 
-def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
+def add_idx_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
     ow.wrap_fn = partial(ow.wrap_fn, pipeline=pipeline, kwargs=kwargs)
 
@@ -141,8 +167,8 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     # LOAD
     # -----------------------
     @ow.wrap_fn(ow.FuncType.LOAD)
-    def load_data(**fn_kwargs) -> ow.DataType:
-        return load_data_logic(**fn_kwargs)
+    def load_index_data(**fn_kwargs) -> ow.DataType:
+        return load_index_data_logic(**fn_kwargs)
 
     # -----------------------
     # DATA — imported logic
@@ -155,30 +181,27 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[])
     def filter_gaps_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
         return filter_gaps_logic(data, **fn_kwargs)
-    
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
-    def earnings_dates(data: ow.DataType, **fn_kwargs):
-        return earnings_dates_logic(data, **fn_kwargs)
+        
 
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data])
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_index_data])
     def filter_out(data: ow.DataType, **fn_kwargs):
         return filter_out_logic(data, **fn_kwargs)
 
     @ow.wrap_fn(ow.FuncType.DATA)
-    def load_underlying(data: ow.DataType, **fn_kwargs):
-        return load_underlying_logic(data, **fn_kwargs)
+    def idx_futures(data: ow.DataType, **fn_kwargs):
+        return idx_futures_logic(data, **fn_kwargs)
 
     @ow.wrap_fn(ow.FuncType.DATA)
-    def in_universe(data: ow.DataType, **fn_kwargs):
-        return in_universe_logic(data, **fn_kwargs)
+    def in_universe_dummy(data: ow.DataType, **fn_kwargs):
+        return in_universe_dummy_logic(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms, filter_out, load_underlying])
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms, filter_out, idx_futures])
     def perc_spread(data: ow.DataType, **fn_kwargs):
         return perc_spread_logic(data, **fn_kwargs)
 
     @ow.wrap_fn(
         ow.FuncType.DATA,
-        depends_on=[load_data, ttms, filter_out, perc_spread, load_underlying],
+        depends_on=[load_index_data, ttms, filter_out, perc_spread, idx_futures],
     )
     def ratio_spread(data: ow.DataType, **fn_kwargs):
         return ratio_spread_logic(data, **fn_kwargs)

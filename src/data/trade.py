@@ -36,6 +36,8 @@ class TransactionCostModel(str, Enum):
     SPREAD = "spread"
 
 
+
+
 @dataclass
 class PriceSeries(Serializable):
     tick: str
@@ -84,6 +86,7 @@ class PriceSeries(Serializable):
                     date=DateObj.from_iso(v["date"]) if isinstance(v["date"], str) else v["date"],
                     tick=v.get("tick", tick),
                     option_type=OptionType(v["option_type"]),
+                    num_underlying=v["num_underlying"],
                     strike=v["strike"],
                     expiry=DateObj.from_iso(v["expiry"]) if isinstance(v["expiry"], str) else v["expiry"],
                     iv=v.get("iv"),

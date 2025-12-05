@@ -1,5 +1,5 @@
 from .date import DateObj
-from .contract import Option, Future, Spot, OptionType, BaseUnderlying
+from .contract import Option, Future, Spot, OptionType, BaseUnderlying, OptionsTradeSpec
 from .trade import (
     Equity,
     Cashflow,
@@ -26,4 +26,5 @@ __all__ = [
     "AccountingConvention",
     "PriceSeries",
     "BaseTradeFeatures",
+    "OptionsTradeSpec",
 ]

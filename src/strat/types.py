@@ -54,16 +54,16 @@ class BaseType(ABC):
     def __call__(self) -> None | pl.DataFrame:
         return self._data
 
-    def save(self, save_type: SaveType = SaveType.PARQUET) -> None:
+    def save(self, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> None:
         if save_type == SaveType.PARQUET:
-            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}_{suffix}.parquet"
             if save_path.parent.exists() is False:
                 save_path.parent.mkdir(parents=True, exist_ok=True)
             self._data.write_parquet(save_path)
         elif save_type == SaveType.PICKLE:
             import dill
 
-            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.pkl"
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}_{suffix}.pkl"
             if save_path.parent.exists() is False:
                 save_path.parent.mkdir(parents=True, exist_ok=True)
             dill.dump(self, open(save_path, "wb"))
@@ -82,9 +82,9 @@ class BaseType(ABC):
             return False
 
     @classmethod
-    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET) -> BaseType:
+    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> BaseType:
         if save_type == SaveType.PARQUET:
-            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
+            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.parquet"
             if load_path.exists() is False:
                 return cls(data=None, tick=tick)
             data = pl.read_parquet(load_path)
@@ -92,7 +92,7 @@ class BaseType(ABC):
         elif save_type == SaveType.PICKLE:
             import dill
 
-            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}.pkl"
+            load_path: Path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.pkl"
             if load_path.exists() is False:
                 return cls(data=None, tick=tick)
             return dill.load(open(load_path, "rb"))
@@ -131,9 +131,9 @@ class StratType(BaseType):
     dc_type = EntryData
 
     @override
-    def save(self, save_type: SaveType = SaveType.PARQUET) -> None:
+    def save(self, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> None:
         if save_type == SaveType.PARQUET:
-            save_path = SAVE_PATH / f"{self._name}_{self._tick}.parquet"
+            save_path = SAVE_PATH / f"{self._name}_{self._tick}_{suffix}.parquet"
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
             if self._data is None:
@@ -146,7 +146,7 @@ class StratType(BaseType):
         elif save_type == SaveType.PICKLE:
             import dill
 
-            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}.pkl"
+            save_path: Path = SAVE_PATH / f"{self._name}_{self._tick}_{suffix}.pkl"
             if save_path.parent.exists() is False:
                 save_path.parent.mkdir(parents=True, exist_ok=True)
             dill.dump(self, open(save_path, "wb"))
@@ -162,9 +162,9 @@ class StratType(BaseType):
 
     @override
     @classmethod
-    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET) -> StratType:
+    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> StratType:
         if save_type == SaveType.PARQUET:
-            path = SAVE_PATH / f"{cls._name}_{tick}.parquet"
+            path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.parquet"
             if not path.exists():
                 return cls(data=None, tick=tick)
 
@@ -183,7 +183,7 @@ class StratType(BaseType):
 
             if SAVE_PATH.exists() is False:
                 return cls(data=None, tick=tick)
-            return dill.load(open(SAVE_PATH / f"{cls._name}_{tick}.pkl", "rb"))
+            return dill.load(open(SAVE_PATH / f"{cls._name}_{tick}_{suffix}.pkl", "rb"))
 
     def reconstruct(self, wrapper=None):
         if self._data is None:

@@ -36,8 +36,13 @@ class BackTestCoordinator:
     def run(self) -> BackTestResult:
         self._run_backtest()
         return self._process_results()
+    
+    def compress(self, result: BackTestResult) -> None:
+
+        pass
 
     # --- Internal Methods --- #
+
     def _run_backtest(self) -> None:
 
         max_equity = self._position.starting_cash

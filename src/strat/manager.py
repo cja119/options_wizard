@@ -99,7 +99,7 @@ class SingleTickProcessor:
             if self._break:
                 break
         if not self._break:
-            self._save()
+            self._save(kwargs.get("suffix", ""))
 
         return self._return()
 
@@ -144,19 +144,19 @@ class SingleTickProcessor:
             else:
                 self._exit()
 
-    def _save(self) -> None:
+    def _save(self, suffix: str) -> None:
         if self._saves and not self._save_type:
             raise ValueError(
                 "Save type must be specified if saving any frames in the pipeline."
             )
         if SaveFrames.DATA in self._saves:
-            self._data.save(self._save_type)
+            self._data.save(self._save_type, suffix=suffix)
         if SaveFrames.OUTPUT in self._saves:
-            self._output.save(self._save_type)
+            self._output.save(self._save_type, suffix=suffix)
         if SaveFrames.STRAT in self._saves:
-            self._strat.save(self._save_type)
+            self._strat.save(self._save_type, suffix=suffix)
         if SaveFrames.MODEL in self._saves:
-            self._model.save(self._save_type)
+            self._model.save(self._save_type, suffix=suffix)
         return None
 
     def _return(self) -> Any:

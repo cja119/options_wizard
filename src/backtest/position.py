@@ -84,7 +84,7 @@ class PositionBase(ABC):
         entering, scheduled_exit = [], []
         while self._entry_idx < len(self._entries) and self._entries[self._entry_idx]._entry_key == key:
             t = self._entries[self._entry_idx]; self._active.append(t); entering.append(t); self._entry_idx += 1
-        while self._exit_idx < len(self._exits) and self._exits[self._exit_idx]._exit_key == key:
+        while self._exit_idx < len(self._exits) and self._exits[self._exit_idx]._exit_key <= key:
             t = self._exits[self._exit_idx]
             if t in self._active and not getattr(t, "_closed", False):
                 scheduled_exit.append(t)
@@ -128,6 +128,13 @@ class PositionBase(ABC):
                 total_cash += cashflow.amount
 
         trade_equities = self._snapshot.trade_equities.copy()
+        # Remove any trades already marked closed to avoid stale equity lingering
+        for closed_trade in list(trade_equities.keys()):
+            if getattr(closed_trade, "_closed", False):
+                trade_equities.pop(closed_trade, None)
+        # Drop trades that were closed on this tick so they don't linger in snapshots
+        for closed_trade in self._drop_trades:
+            trade_equities.pop(closed_trade, None)
         total_equity = 0.0
 
         for trade in live_trades:
@@ -155,9 +162,21 @@ class PositionBase(ABC):
 
     def _finalize_schedule(self):
         def key(d): return (d.year, d.month, d.day)
+
+        # Drop trades that start before the backtest window to avoid blocking the schedule
+        filtered_trades = []
+        for t in self._trades:
+            if t.entry_data.entry_date < self._start_date:
+                continue
+            if self._end_date is not None and t.entry_data.entry_date > self._end_date:
+                continue
+            filtered_trades.append(t)
+        self._trades = filtered_trades
+
         for t in self._trades:
             t._entry_key = key(t.entry_data.entry_date)
             t._exit_key = key(t.entry_data.exit_date)
+
         self._entries = sorted(self._trades, key=lambda t: t._entry_key)
         self._exits = sorted(self._trades, key=lambda t: t._exit_key)
         self._entry_idx = 0

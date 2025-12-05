@@ -5,12 +5,26 @@ from abc import ABC
 from enum import Enum
 import pickle
 import sys
-from typing import Optional, Type
+from typing import Callable, Optional, Type
 
 from .base import Serializable
 from .date import DateObj
 
 
+@dataclass
+class OptionsTradeSpec:
+    call_put: OptionType
+    strike: Callable = field(default=lambda x: True)
+    ttm: Callable = field(default=lambda x: True)
+    abs_delta: Callable = field(default=lambda x: True)
+    entry_cond: Callable = field(default=lambda x: True)
+    entry_col: Optional[str] = field(default=None)
+    exit_cond: Callable = field(default=lambda x: False)
+    exit_col: Optional[str] = field(default=None)
+    entry_min: str = "perc_spread"
+    max_hold_period: int = 30
+    position: float = 1.0
+    
 @dataclass
 class BaseUnderlying(Serializable, ABC):
     bid: float
@@ -26,8 +40,8 @@ class BaseUnderlying(Serializable, ABC):
 
 
 class OptionType(str, Enum):
-    CALL = "call"
-    PUT = "put"
+    CALL = "c"
+    PUT = "p"
 
 
 class UnderlyingType(str, Enum):
@@ -58,6 +72,7 @@ class Option(BaseUnderlying):
     # --- Optional Fields --- #
     iv: Optional[float] = field(default=None)
     underlying: Optional[BaseUnderlying] = field(default=None)
+    num_underlying: Optional[float] = field(default=None)
     rfr: Optional[float] = field(default=None)
     delta: Optional[float] = field(default=None)
     gamma: Optional[float] = field(default=None)

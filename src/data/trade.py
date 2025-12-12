@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import List, Dict, TYPE_CHECKING
+from typing import List, Dict, TYPE_CHECKING, Any, Tuple
 from enum import Enum
 
 from data.date import DateObj, Serializable
@@ -79,6 +79,11 @@ class PriceSeries(Serializable):
                     utag = None
             utag = str(utag).lower() if utag is not None else None
             if utag and "Option".lower() in utag:
+
+                other_data = v.get("other")
+                if other_data is not None:
+                    other_data = Serializable._decode(other_data, Dict[str, Any])
+
                 out[k] = Option(
                     bid=v["bid"],
                     ask=v["ask"],
@@ -97,6 +102,7 @@ class PriceSeries(Serializable):
                     vega=v.get("vega"),
                     theta=v.get("theta"),
                     rho=v.get("rho"),
+                    other=other_data
                 )
             elif utag and "Spot".lower() in utag:
                 out[k] = Spot(

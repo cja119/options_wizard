@@ -5,7 +5,7 @@ from abc import ABC
 from enum import Enum
 import pickle
 import sys
-from typing import Callable, Optional, Type
+from typing import Callable, Optional, Type, List
 
 from .base import Serializable
 from .date import DateObj
@@ -17,10 +17,12 @@ class OptionsTradeSpec:
     strike: Callable = field(default=lambda x: True)
     ttm: Callable = field(default=lambda x: True)
     abs_delta: Callable = field(default=lambda x: True)
-    entry_cond: Callable = field(default=lambda x: True)
-    entry_col: Optional[str] = field(default=None)
-    exit_cond: Callable = field(default=lambda x: False)
-    exit_col: Optional[str] = field(default=None)
+    entry_cond: Callable | List[Callable]= field(default=lambda x: True)
+    entry_col: Optional[str] | List[Optional[str]] = field(default=None)
+    exit_cond: Callable | List[Callable] = field(default=lambda x: False)
+    exit_col: Optional[str] | List[Optional[str]] = field(default=None)
+    volume_min: int = 0
+    open_interest_min: int = 0
     entry_min: str = "perc_spread"
     max_hold_period: int = 30
     position: float = 1.0
@@ -79,6 +81,7 @@ class Option(BaseUnderlying):
     vega: Optional[float] = field(default=None)
     theta: Optional[float] = field(default=None)
     rho: Optional[float] = field(default=None)
+    other: Optional[dict] = field(default=None)
 
     # --- Internal Fields --- #
     underlying_type: UnderlyingType = UnderlyingType.OPTION

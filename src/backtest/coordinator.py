@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Deque, TYPE_CHECKING
 from collections import deque
-from .position import PositionBase
+from .position.base import PositionBase
 
 from tqdm import tqdm
 from numpy import log as np_log

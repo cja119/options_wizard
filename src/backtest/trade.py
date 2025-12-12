@@ -16,10 +16,7 @@ from data.trade import (
 
 from data.date import DateObj
 
-# Portion of the quoted bid/ask spread we assume we capture on execution.
-# Was 0.75 pre-refactor; reverting to that tighter slippage assumption to
-# avoid over-penalising trades.
-SPREAD_CAPTURE = 1.0
+SPREAD_CAPTURE = 0.5
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
@@ -41,6 +38,13 @@ class Trade:
         self._tick = entry_data.tick
 
     # ---- External Interface ---- #
+    @property
+    def entry_cost(self) -> float:
+        price: BaseUnderlying = self.entry_data.price_series.prices[
+            self.entry_data.entry_date.to_iso()
+        ]
+        return self._cash_position(price)
+
     def __call__(self, date: DateObj) -> Tuple[Equity | None, Cashflow | None]:
 
         if date not in self.entry_data.price_series.prices:

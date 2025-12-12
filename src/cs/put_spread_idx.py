@@ -62,16 +62,6 @@ def load_index_data_logic(**kwargs) -> ow.DataType:
 
     return ow.DataType(df, tick)
 
-
-def filter_out_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import filter_out as ps_filter_out
-    return ps_filter_out(data, **kwargs)
-
-
-def ttms_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import ttms as ps_ttms
-    return ps_ttms(data, **kwargs)
-
 def in_universe_dummy_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     tick = kwargs.get("tick", "")
     df = data()
@@ -131,30 +121,6 @@ def vix_term_structure(data: ow.DataType, **kwargs) -> ow.DataType:
 
     return ow.DataType(joined, tick=tick)
 
-
-def scale_splits_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import scale_splits as ps_scale_splits
-    return ps_scale_splits(data, **kwargs)
-
-
-def perc_spread_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import perc_spread as ps_perc_spread
-    return ps_perc_spread(data, **kwargs)
-
-
-def ratio_spread_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import ratio_spread as ps_ratio_spread
-    return ps_ratio_spread(data, **kwargs)
-
-
-def fixed_hold_trade_logic(data: ow.DataType, **kwargs) -> ow.StratType:
-    from .put_spread import fixed_hold_trade as ps_fixed
-    return ps_fixed(data, **kwargs)
-
-def filter_gaps_logic(data: ow.DataType, **kwargs) -> ow.DataType:
-    from .put_spread import filter_gaps as ps_filter_gaps
-    return ps_filter_gaps(data, **kwargs)
-
 # ===========================================================
 #     PIPELINE REGISTRATION (BOTTOM OF FILE)
 # ===========================================================
@@ -162,6 +128,14 @@ def filter_gaps_logic(data: ow.DataType, **kwargs) -> ow.DataType:
 def add_idx_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
 
     ow.wrap_fn = partial(ow.wrap_fn, pipeline=pipeline, kwargs=kwargs)
+    from .put_spread import (
+        options_entry,
+        perc_spread,
+        filter_gaps,
+        filter_out,
+        options_trade,
+        ttms,
+    )
 
     # -----------------------
     # LOAD
@@ -174,40 +148,38 @@ def add_idx_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     # DATA — imported logic
     # -----------------------
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[])
-    def ttms(data: ow.DataType, **fn_kwargs):
-        return ttms_logic(data, **fn_kwargs)
-    
+    def ttms_wrapped(data: ow.DataType, **fn_kwargs):
+        return ttms(data, **fn_kwargs)
     
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[])
     def filter_gaps_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
-        return filter_gaps_logic(data, **fn_kwargs)
+        return filter_gaps(data, **fn_kwargs)
         
-
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_index_data])
-    def filter_out(data: ow.DataType, **fn_kwargs):
-        return filter_out_logic(data, **fn_kwargs)
+    def filter_out_wrapped(data: ow.DataType, **fn_kwargs):
+        return filter_out(data, **fn_kwargs)
 
     @ow.wrap_fn(ow.FuncType.DATA)
-    def idx_futures(data: ow.DataType, **fn_kwargs):
+    def idx_futures_wrapped(data: ow.DataType, **fn_kwargs):
         return idx_futures_logic(data, **fn_kwargs)
 
     @ow.wrap_fn(ow.FuncType.DATA)
-    def in_universe_dummy(data: ow.DataType, **fn_kwargs):
+    def in_universe_wrapped(data: ow.DataType, **fn_kwargs):
         return in_universe_dummy_logic(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms, filter_out, idx_futures])
-    def perc_spread(data: ow.DataType, **fn_kwargs):
-        return perc_spread_logic(data, **fn_kwargs)
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms_wrapped, filter_out_wrapped, idx_futures_wrapped])
+    def perc_spread_wrapped(data: ow.DataType, **fn_kwargs):
+        return perc_spread(data, **fn_kwargs)
 
     @ow.wrap_fn(
         ow.FuncType.DATA,
-        depends_on=[load_index_data, ttms, filter_out, perc_spread, idx_futures],
+        depends_on=[load_index_data, ttms_wrapped, filter_out_wrapped, perc_spread_wrapped, idx_futures_wrapped],
     )
-    def ratio_spread(data: ow.DataType, **fn_kwargs):
-        return ratio_spread_logic(data, **fn_kwargs)
+    def options_entry_wrapped(data: ow.DataType, **fn_kwargs):
+        return options_entry(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.STRAT, depends_on=[ratio_spread])
-    def fixed_hold_trade(data: ow.DataType, **fn_kwargs):
-        return fixed_hold_trade_logic(data, **fn_kwargs)
+    @ow.wrap_fn(ow.FuncType.STRAT, depends_on=[options_entry_wrapped])
+    def options_trade_wrapped(data: ow.DataType, **fn_kwargs):
+        return options_trade(data, **fn_kwargs)
 
     return None

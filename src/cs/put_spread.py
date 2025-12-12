@@ -8,84 +8,6 @@ from functools import partial
 import numpy as np
 
 
-class FixedHoldNotional(ow.PositionBase):
-    _carry = 0.0
-    _notional_exposure = None
-
-    @override
-    def size_function(self, entering_trades: List[ow.Trade]) -> Dict[ow.Trade, float]:
-        protected_notional = self._kwargs.get("protected_notional", 1_000_000)
-        hold_period = self._kwargs.get("hold_period", 30)
-        notional = protected_notional / (hold_period)
-
-        # If nothing to enter today, roll the daily budget forward once
-        if not entering_trades:
-            self._carry += notional
-            return {}
-
-        # Deploy the accumulated budget across all trades entering today
-        notional += self._carry
-        self._carry = 0.0
-
-        # Anchor sizing on short-leg exposure per ticker so each name gets the
-        # same notional allocation on a given day, regardless of how many legs
-        # it uses.
-        short_exp_by_tick = {}
-        for trade in entering_trades:
-            if trade.entry_data.position_type != ow.PositionType.SHORT:
-                continue
-            entry_px = trade.entry_data.price_series.get(trade.entry_data.entry_date)
-            if entry_px is None or entry_px.delta is None or entry_px.underlying is None:
-                continue
-            exp = abs(
-                entry_px.delta * trade.entry_data.position_size * entry_px.underlying.ask
-            )
-            short_exp_by_tick[entry_px.tick] = short_exp_by_tick.get(entry_px.tick, 0.0) + exp
-
-        if not short_exp_by_tick:
-            # No meaningful anchor to size off today; roll budget forward.
-            self._carry += notional
-            return {trade: 0.0 for trade in entering_trades}
-
-        per_tick_budget = notional / len(short_exp_by_tick)
-
-        sizes = {}
-        for trade in entering_trades:
-            entry_px = trade.entry_data.price_series.get(trade.entry_data.entry_date)
-            tick = entry_px.tick if entry_px is not None else None
-            tick_exp = short_exp_by_tick.get(tick, 0.0)
-            if tick_exp == 0.0:
-                sizes[trade] = 0.0
-                print("Trade ZERO size due to zero exposure anchor.")
-                continue
-            sizes[trade] = per_tick_budget / tick_exp
-
-        return sizes
-
-    @override
-    def exit_trigger(
-        self,
-        live_trades: List[ow.Trade],
-        current_date: ow.DateObj,
-        scheduled_exits: List[ow.Trade],
-    ) -> Tuple[List[ow.Trade], List[ow.Cashflow]]:
-        exit_cashflows = []
-        trades_to_close = set()
-        max_days_open = self._kwargs.get("hold_period", 30)
-        for trade in live_trades:
-            if trade.days_open(current_date) >= max_days_open:
-                _, cashflow = trade.close(current_date)
-                exit_cashflows.append(cashflow)
-                trades_to_close.add(trade)
-
-        for trade in scheduled_exits:
-            if trade not in trades_to_close:
-                _, cashflow = trade.close(current_date)
-                exit_cashflows.append(cashflow)
-                trades_to_close.add(trade)
-        return trades_to_close, exit_cashflows
-
-
 # ============================================================
 #   TOP-LEVEL LOGIC FUNCTIONS (IMPORTABLE, UNDECORATED)
 # ============================================================
@@ -430,6 +352,7 @@ def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
     splits["Date"] = splits["Date"].dt.normalize()  
     splits = splits.sort_values("Date")
 
+    df = df.with_columns(pl.col("underlying_close").alias("raw_underlying_close"))
     cols_to_reduce = ["last_trade_price", "bid_price", "ask_price", "strike", "underlying_close"]
     cols_to_increase = ["volume", "open_interest", "num_shares"]
 
@@ -455,7 +378,7 @@ def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
 
     return ow.DataType(df, tick)
 
-def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:
+def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
     import polars as pl
 
     df_raw = data()
@@ -482,8 +405,10 @@ def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:
         strike_fn = spec.strike
         ttm_fn = spec.ttm
         abs_delta_fn = spec.abs_delta
-        entry_cond_fn = spec.entry_cond
-        entry_col = spec.entry_col
+        entry_cond_fn = spec.entry_cond if isinstance(spec.entry_cond, List) else [spec.entry_cond]
+        open_interest_min = spec.open_interest_min
+        volume_min = spec.volume_min
+        entry_col = spec.entry_col if isinstance(spec.entry_col, List) else [spec.entry_col]
         minimise_col = spec.entry_min
         max_hold = spec.max_hold_period
         position = spec.position
@@ -507,22 +432,19 @@ def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:
             & (pl.col("n_missing") == 0)
             & (pl.col("days_until_last_trade") > max_hold)
             & (pl.col("in_universe") == True)
+            & (pl.col("open_interest") >= open_interest_min)
+            & (pl.col("volume") >= volume_min)
         )
 
         # ---- optional entry condition ----
-        if entry_col is not None:
-            eligible = eligible.filter(
-                pl.col(entry_col).map_elements(
-                    lambda x, fn=entry_cond_fn: fn(x)
+        if entry_col and all(col is not None for col in entry_col):
+            for col, cond in zip(entry_col, entry_cond_fn):
+                eligible = eligible.filter(
+                    pl.col(col).map_elements(
+                        lambda x, fn=cond: _safe_apply(x, fn)
+                    )
                 )
-            )
-        else:
-            eligible = eligible.filter(
-                pl.struct(df.collect_schema().names()).map_elements(
-                    lambda row, fn=entry_cond_fn: fn(row)
-                )
-            )
-        
+            
         # ---- pick best per day ----
         entries = (
             eligible
@@ -542,6 +464,18 @@ def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:
 
     if all_entries:
         entries = pl.concat(all_entries, how="vertical")
+
+        # Only allow entries on dates where every spec produced a candidate.
+        # This guards against partially-filled days slipping through when,
+        # for example, one leg fails its entry filter.
+        if len(specs) > 0:
+            entries = (
+                entries.with_columns(
+                    pl.count().over("trade_date").alias("_entries_per_day")
+                )
+                .filter(pl.col("_entries_per_day") == len(specs))
+                .drop("_entries_per_day")
+            )
     else:
         entries = df.head(0).with_columns(
             [
@@ -567,7 +501,7 @@ def ratio_spread(data: ow.DataType, **kwargs) -> ow.DataType:
     return ow.DataType(df_out, tick)
 
 
-def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
+def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
     from collections import deque
     from functools import lru_cache
     import polars as pl
@@ -578,6 +512,7 @@ def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
 
     specs = kwargs.get("specs", [])
     tick = kwargs.get("tick", "")
+    other_data = kwargs.get("other_data", [])
 
     # map spec by (call_put, position) for finding exit rules
     spec_lookup = {(s.call_put, s.position): s for s in specs}
@@ -602,8 +537,8 @@ def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
         if spec is None:
             continue
 
-        exit_cond_fn = spec.exit_cond
-        exit_col = spec.exit_col
+        exit_cond_fn = spec.exit_cond if isinstance(spec.exit_cond, List) else [spec.exit_cond]
+        exit_col = spec.exit_col if isinstance(spec.exit_col, List) else [spec.exit_col]
         max_hold = trade["max_hold_period"]
 
         key = (trade["call_put"], trade["strike"], trade["expiry_date"])
@@ -641,6 +576,11 @@ def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
             mid_iv = None
             if r['bid_implied_volatility'] is not None and r['ask_implied_volatility'] is not None:
                 mid_iv = (r["bid_implied_volatility"] + r["ask_implied_volatility"]) / 2
+            
+            others = {}
+            for datum in other_data:
+                others[datum] = r[datum]
+
 
             option_contract = Option(
                 bid=r["bid_price"],
@@ -660,15 +600,17 @@ def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
                 vega=r["vega"],
                 theta=r["theta"],
                 rho=r.get("rho"),
+                other=others
             )
+
 
             price_series.add(option_contract)
 
             # ---- exit rule: exit_cond() applied correctly ----
-            if exit_col is not None:
-                fired = exit_cond_fn(r[exit_col])
+            if exit_col and all(col is not None for col in exit_col):
+                fired = any(cond(r[col]) for cond, col in zip(exit_cond_fn, exit_col))
             else:
-                fired = exit_cond_fn(r)
+                fired = any(cond(r) for cond in exit_cond_fn)
 
             if fired and exit_date is None:
                 exit_date = d
@@ -692,7 +634,7 @@ def fixed_hold_trade(data: ow.DataType, **kwargs) -> ow.StratType:
     return ow.StratType(trades, tick)
 
 # ============================================================
-#                   PIPELINE REGISTRATION 
+#                   Strategy Evaluation Pipeline
 # ============================================================
 
 def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
@@ -750,12 +692,11 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
             in_universe_wrapped,
         ],
     )
-    def ratio_spread_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
-        return ratio_spread(data, **fn_kwargs)
+    def options_entry_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
+        return options_entry(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.STRAT, depends_on=[ratio_spread_wrapped])
-    def fixed_hold_trade_wrapped(data: ow.DataType, **fn_kwargs) -> ow.StratType:
-        return fixed_hold_trade(data, **fn_kwargs)
-
+    @ow.wrap_fn(ow.FuncType.STRAT, depends_on=[options_entry_wrapped])
+    def options_trade_wrapped(data: ow.DataType, **fn_kwargs) -> ow.StratType:
+        return options_trade(data, **fn_kwargs)
 
     return None

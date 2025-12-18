@@ -3,3 +3,10 @@
 **/__pycache__/*
 **/*.egg-info
 **/tmp/**
+**/tests/**
+**/*.csv
+**/*.txt
+**/.github
+**/.parquet
+tips.md
+**/*cache**

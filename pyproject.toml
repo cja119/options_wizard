@@ -24,8 +24,10 @@ dependencies = [
   "matplotlib==3.10.6",
   "python-dotenv==1.1.1",
   "yfinance==0.2.66",
+  "polars==1.35.2",
   "pyarrow==21.0.0",
   "lxml==5.3.0",
   "scipy==1.16.2",
+  "tqdm==4.67.1",
   "exchange_calendars==4.11.3"
 ]

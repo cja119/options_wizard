@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable, Any, Tuple, List, Dict
 from functools import wraps
 from enum import Enum
 from tqdm import tqdm
+import io
+import contextlib
+
 
 from .types import (
     FuncType,
@@ -12,10 +16,17 @@ from .types import (
     StratType,
     ModelType,
     SaveType,
+    SAVE_PATH
 )
 
 FNS_SIG = List[Tuple[Callable, Dict[str, Any]]]
 
+
+@contextlib.contextmanager
+def capture_output():
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        yield stdout, stderr
 
 def wrap_fn(
     sig: FuncType,
@@ -83,21 +94,48 @@ class SingleTickProcessor:
         self._break: bool = False
         self._save_type: SaveType | None = save_type
         self._return_type: List[FuncType] | None = return_type
+        self._setup_error_logger()
 
     # --- External Interface --- #
-    def run(self) -> None:
+    def run(self):
         for func, kwargs in self._functions:
             kwargs = kwargs.copy()
             kwargs["tick"] = self._tick
+
             try:
-                self._execute_function(func, kwargs)
-            except Exception as e:
-                print(
-                    f"Error executing function '{func.__name__}' for tick '{self._tick}': {e}"
+                with capture_output() as (out, err):
+                    self._execute_function(func, kwargs)
+
+                if out.getvalue():
+                    self._err_logger.info(
+                        "[stdout] %s %s\n%s",
+                        self._tick,
+                        func.__name__,
+                        out.getvalue().rstrip(),
+                    )
+
+                if err.getvalue():
+                    self._err_logger.warning(
+                        "[stderr] %s %s\n%s",
+                        self._tick,
+                        func.__name__,
+                        err.getvalue().rstrip(),
+                    )
+
+            except Exception:
+                self._err_logger.exception(
+                    "Exception in %s for tick %s",
+                    func.__name__,
+                    self._tick,
                 )
                 self._exit()
+                    
             if self._break:
                 break
+        
+        for h in self._err_logger.handlers:
+             h.flush()
+
         if not self._break:
             self._save(kwargs.get("suffix", ""))
 
@@ -160,6 +198,10 @@ class SingleTickProcessor:
         return None
 
     def _return(self) -> Any:
+        # If we bailed early, signal failure so the progress tracker can count it.
+        if getattr(self, "_break", False):
+            return None
+
         ret_vals = []
         for ret_type in self._return_type:
             if ret_type == FuncType.DATA:
@@ -175,7 +217,27 @@ class SingleTickProcessor:
         elif len(ret_vals) > 1:
             return tuple(ret_vals)
         else:
-            return None
+            # Light-weight success flag so progress tracking treats the run as successful
+            # without materializing large data when no explicit return_type is provided.
+            return True
+        
+    def _setup_error_logger(self):
+        log_path = SAVE_PATH / "pipeline_errors.log"
+
+        logger = logging.getLogger("pipeline_errors")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        if not logger.handlers:   # <-- critical
+            handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+            formatter = logging.Formatter(
+                "%(asctime)s | %(levelname)s | %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+
+        self._err_logger = logger
+
 
 
 class SaveFrames(Enum):
@@ -238,10 +300,23 @@ class Pipeline:
                 strats.append(ret if isinstance(ret, ModelType) else None)
         return strats
 
-    # --- Internal Methods --- #
+        # --- Internal Methods --- #
     def _run_pipeline(self) -> None:
-        for tick in tqdm(self.universe.ticks):
-            self._rets[tick] = self._run_single(tick)  #
+        failed = 0
+
+        with tqdm(self.universe.ticks) as pbar:
+            for tick in pbar:
+                result = self._run_single(tick)
+                self._rets[tick] = result
+
+                # failure logic
+                if result is None:
+                    failed += 1
+                elif isinstance(result, tuple) and all(r is None for r in result):
+                    failed += 1
+
+                pbar.set_postfix(failed=failed)       
+
 
     def _run_single(
         self, tick: str
@@ -271,3 +346,5 @@ class Pipeline:
         else:
             self._saves = saves
         return None
+
+ 

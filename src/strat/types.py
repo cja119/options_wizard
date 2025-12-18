@@ -17,7 +17,10 @@ from data.trade import *
 from data.date import *
 from data.contract import *
 
-SAVE_PATH: Path = Path(os.getcwd()) / "tmp"
+# Pin all strategy/data artifacts to the project root regardless of the
+# current working directory of the caller (e.g., notebooks/ vs repo root).
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SAVE_PATH: Path = PROJECT_ROOT / "tmp"
 
 
 class SaveType(str, Enum):

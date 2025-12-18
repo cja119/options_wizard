@@ -16,7 +16,7 @@ from data.trade import (
 
 from data.date import DateObj
 
-SPREAD_CAPTURE = 0.5
+SPREAD_CAPTURE = 1.0
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
@@ -36,6 +36,7 @@ class Trade:
         self._opened = False
         self._closed = False
         self._tick = entry_data.tick
+        self._spread_capture = SPREAD_CAPTURE
 
     # ---- External Interface ---- #
     @property
@@ -45,7 +46,10 @@ class Trade:
         ]
         return self._cash_position(price)
 
-    def __call__(self, date: DateObj) -> Tuple[Equity | None, Cashflow | None]:
+    def __call__(self, date: DateObj, spread_capture: float = SPREAD_CAPTURE) -> Tuple[Equity | None, Cashflow | None]:
+
+        if spread_capture != SPREAD_CAPTURE:
+            self._spread_capture = spread_capture
 
         if date not in self.entry_data.price_series.prices:
             date = self._nearest_date_below(date)
@@ -111,7 +115,7 @@ class Trade:
     def _half_spread_adj(self, price: BaseUnderlying, is_buy: bool) -> float:
         if self.transaction_cost_model != TransactionCostModel.SPREAD:
             return 0.0
-        half_spread = (price.ask - price.bid) / 2 * (1 - SPREAD_CAPTURE)
+        half_spread = (price.ask - price.bid) / 2 * (1 - self._spread_capture)
         return half_spread if is_buy else -half_spread
 
     def _execution_price(self, price: BaseUnderlying, is_buy: bool) -> float:

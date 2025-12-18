@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 from functools import partial
+import time
 
 
 # -----------------------------------------------------------
@@ -38,11 +39,11 @@ OPT_DROP_MAP = [
 
 
 def earnings_dates(data: ow.DataType, **kwargs) -> ow.DataType:
+    import os
     import polars as pl
-    import yfinance as yf
+    import pandas as pd
 
     tick = kwargs.get("tick", "")
-    limit = kwargs.get("earnings_limit", 100)
     exchange = kwargs.get("exchange", ow.Exchange.NASDAQ)
 
     df_raw = data()
@@ -66,21 +67,33 @@ def earnings_dates(data: ow.DataType, **kwargs) -> ow.DataType:
         .sort("trade_date")
     )
 
-    ed = yf.Ticker(tick).get_earnings_dates(limit=limit).sort_index()
-    if ed is None or ed.empty:
+    # ---- NEW: CSV earnings dates ----
+    earn_dates_path = os.getenv("EARN_DATES", "").split(os.pathsep)[0]
+    if not earn_dates_path:
+        raise ValueError("EARN_DATES env var not set")
+
+    earn_dates = pd.read_csv(earn_dates_path)[tick]
+    earn_dates = (
+        pd.to_datetime(earn_dates, format="%Y%m%d", errors="coerce")
+        .dt.date
+        .dropna()
+    )
+
+    if earn_dates.empty:
         raise ValueError(f"No earnings dates found for {tick}")
 
     earns_lf = (
-        pl.from_pandas(ed.reset_index()[["Earnings Date"]])
-        .rename({"Earnings Date": "earn_date"})
-        .with_columns(pl.col("earn_date").dt.date())
+        pl.DataFrame({"earn_date": earn_dates})
+        .with_columns(pl.col("earn_date").cast(pl.Date))  
         .sort("earn_date")
         .lazy()
     )
 
+    # ---- existing logic (unchanged) ----
     floor_hits = earns_lf.join_asof(
         cal_lf, left_on="earn_date", right_on="trade_date", strategy="backward"
     ).select(["trade_date", "td_idx"])
+
     ceil_hits = earns_lf.join_asof(
         cal_lf, left_on="earn_date", right_on="trade_date", strategy="forward"
     ).select(["trade_date", "td_idx"])
@@ -98,7 +111,6 @@ def earnings_dates(data: ow.DataType, **kwargs) -> ow.DataType:
         .join(cal_lf, on="trade_date", how="left")
     )
 
-    # new locals to preserve sorted state for asof joins
     df_for_asof = df_sorted.sort("trade_date")
     earnings_for_asof = earnings_td.sort("trade_date")
 
@@ -260,9 +272,9 @@ def rec_high_low(data: ow.DataType, **kwargs) -> ow.DataType:
 
     return ow.DataType(out_df, tick=tick)
 
-
+# ===========================================================
 #                   Strategy Evaluation Pipeline
-# ===========================================================.
+# ===========================================================
 
 
 def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
@@ -277,8 +289,9 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         load_data,
         options_entry,
         options_trade,
-        underlying_close,
         scale_splits,
+        log_moneyness,
+        underlying_close,
         in_universe,
     )
 
@@ -321,6 +334,10 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA)
     def rec_high_low_wrapped(data: ow.DataType, **fn_kwargs):
         return rec_high_low(data, **fn_kwargs)
+    
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
+    def log_moneyness_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
+        return log_moneyness(data, **fn_kwargs)
 
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms_wrapped, filter_out_wrapped, underlying_close_wrapped])
     def perc_spread_wrapped(data: ow.DataType, **fn_kwargs):

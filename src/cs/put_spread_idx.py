@@ -134,6 +134,7 @@ def add_idx_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
         filter_gaps,
         filter_out,
         options_trade,
+        log_moneyness,
         ttms,
     )
 
@@ -170,6 +171,10 @@ def add_idx_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms_wrapped, filter_out_wrapped, idx_futures_wrapped])
     def perc_spread_wrapped(data: ow.DataType, **fn_kwargs):
         return perc_spread(data, **fn_kwargs)
+    
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[filter_gaps_wrapped, in_universe_wrapped])
+    def log_moneyness_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
+        return log_moneyness(data, **fn_kwargs)
 
     @ow.wrap_fn(
         ow.FuncType.DATA,

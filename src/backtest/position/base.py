@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, TYPE_CHECKING, Tuple, Set
+from typing import List, Dict, TYPE_CHECKING, Tuple, Set, Iterable
 
 from data.trade import Cashflow, Snapshot
 from backtest.trade import Trade
@@ -49,7 +49,7 @@ class PositionBase(ABC):
 
     # ---- External Interface ---- #
     def add_trade(self, trade: "Trade" | List[Trade]) -> None:
-        if isinstance(trade, Trade):
+        if not isinstance(trade, Iterable):
             self._trades.append(trade)
         else:
             self._trades.extend(trade)

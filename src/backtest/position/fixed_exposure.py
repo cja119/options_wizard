@@ -31,8 +31,11 @@ class ShortExposureLimTrade(PositionBase):
             if entry_px is None or entry_px.underlying is None or trade.entry_data.position_type != PositionType.SHORT:
                 continue
             
+            if (entry_px.ask -entry_px.bid) / (entry_px.bid + entry_px.ask) > 0.15:
+                continue
+
             short_size[trade.entry_data.tick] += abs(
-                entry_px.bid * abs(trade.entry_data.position_size)
+                entry_px.ask * abs(trade.entry_data.position_size)
                 )
             
         
@@ -41,7 +44,7 @@ class ShortExposureLimTrade(PositionBase):
                 continue
             short_size[tick] = trade_lim / val
 
-        daily_sum = sum(short_size.values())
+        daily_sum = sum(short_size.values()) + 1e-10
         if daily_sum > daily_lim:
             scale = daily_lim / daily_sum
             for tick in short_size.keys():

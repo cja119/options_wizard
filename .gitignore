@@ -6,3 +6,7 @@
 **/tests/**
 **/*.csv
 **/*.txt
+**/.github
+**/.parquet
+tips.md
+**/*cache**

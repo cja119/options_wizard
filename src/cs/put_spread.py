@@ -23,7 +23,11 @@ def load_data(**kwargs) -> ow.DataType:
     load_dotenv()
     tick = kwargs.get("tick", "")
     tick_path = os.getenv("TICK_PATH", "")
-    data = pl.scan_parquet(os.path.join(tick_path, f"{tick}.parquet"))
+    try:
+        data = pl.scan_parquet(os.path.join(tick_path, f"{tick}.parquet"))
+    except FileNotFoundError:
+        # Missing tick data: return empty so the pipeline can short-circuit cleanly
+        return ow.DataType(None, tick)
 
     if max_date is not None:
         data = data.filter(pl.col("trade_date") <= max_date)
@@ -277,8 +281,27 @@ def underlying_close(data: ow.DataType, **kwargs) -> ow.DataType:
     """Adds underlying close price to data."""
     import yfinance as yf
     import polars as pl
+    import pandas as pd
+    import time
 
     tick = kwargs.get("tick", "")
+
+    def _is_rate_limited(err: Exception) -> bool:
+        resp = getattr(err, "response", None)
+        if resp is not None and getattr(resp, "status_code", None) == 429:
+            return True
+        return "429" in str(err)
+
+    def _with_backoff(fn, attempts: int = 5, base_delay: float = 1.0):
+        for i in range(1, attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001 — we need to inspect for 429
+                if _is_rate_limited(exc) and i < attempts:
+                    time.sleep(base_delay * i)
+                    continue
+                raise
+
     ticker = yf.Ticker(tick)
 
     df = data()
@@ -294,87 +317,74 @@ def underlying_close(data: ow.DataType, **kwargs) -> ow.DataType:
         start = df.select(pl.col("trade_date").min()).item()
         end = df.select(pl.col("trade_date").max()).item()
 
-    hist = ticker.history(
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        auto_adjust=False,
-        interval="1d",
-    ).reset_index()
+    hist = _with_backoff(
+        lambda: ticker.history(
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            auto_adjust=False,
+            interval="1d",
+        )
+    )
+
+    if hist is None or hist.empty:
+        return ow.DataType(None, tick)
+
+    hist = hist.reset_index()
+    hist["Date"] = pd.to_datetime(hist["Date"], errors="coerce")
+    hist = hist.dropna(subset=["Date"])
+    if hist.empty:
+        return ow.DataType(None, tick)
+
+    splits = hist["Stock Splits"].fillna(0).replace(0, 1.0)
+    split_factor = splits.iloc[::-1].cumprod().iloc[::-1]
 
     hist["Date"] = hist["Date"].dt.tz_localize(None)
+    hist["split_factor"] = split_factor
+    hist["raw_underlying_close"] = hist["Close"] * split_factor
 
     hist_pl = (
         pl.from_pandas(hist)
         .with_columns(pl.col("Date").dt.date().alias("trade_date"))
         .rename({"Close": "underlying_close"})
-        .select(["trade_date", "underlying_close"])
+        .select(["trade_date", "underlying_close", "split_factor", "raw_underlying_close"])
     )
 
     merged_df = df.join(hist_pl, on="trade_date", how="left")
 
     return ow.DataType(merged_df.lazy(), tick)
 
+def log_moneyness(data: ow.DataType, **kwargs) -> ow.DataType:
+    """Calculates log-moneyness for each option row."""
+    import polars as pl
+
+    df = data()
+
+    df = df.with_columns(
+        (pl.col("strike") / pl.col("underlying_close")).log().alias("log_moneyness")
+    )
+
+    return ow.DataType(df, kwargs.get("tick", ""))
+
 
 def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
     """Scales data for stock splits using Polars expressions."""
-    import yfinance as yf
     import polars as pl
-    import pandas as pd
-
-    apply_adjustment = kwargs.get("apply_split_adjustment", True)
-    if not apply_adjustment:
-        return data
-
-    tick = kwargs.get("tick", "")
-    ticker = yf.Ticker(tick)
-    splits_override = kwargs.get("splits_override")
-    splits = splits_override if splits_override is not None else ticker.splits
-
-    if splits is None or getattr(splits, "empty", False):
-        return data
 
     df = data()
-    if isinstance(splits, pl.DataFrame):
-        splits = splits.rename({"date": "Date", "split": "Split"})
-    elif isinstance(splits, pd.Series):
-        splits = splits.reset_index().rename(
-            columns={"index": "Date", "Stock Splits": "Split"}
-        )
-    elif isinstance(splits, pd.DataFrame):
-        splits = splits.rename(
-            columns={"index": "Date", "Stock Splits": "Split", "split": "Split"}
-        )
-    else:
-        splits = pd.DataFrame(splits).reset_index().rename(
-            columns={"index": "Date", "Stock Splits": "Split", "split": "Split"}
-        )
+    tick = kwargs.get("tick", "")
 
-    splits["Date"] = splits["Date"].dt.normalize()  
-    splits = splits.sort_values("Date")
+    cols_to_reduce = ["last_trade_price", "bid_price", "ask_price", "strike"]
+    cols_to_increase = ["volume", "open_interest"]
 
-    df = df.with_columns(pl.col("underlying_close").alias("raw_underlying_close"))
-    cols_to_reduce = ["last_trade_price", "bid_price", "ask_price", "strike", "underlying_close"]
-    cols_to_increase = ["volume", "open_interest", "num_shares"]
-
-    df = df.with_columns(pl.lit(100).alias("num_shares"))
-
-    for date, ratio in zip(splits["Date"], splits["Split"]):
-        df = df.with_columns(
-            [
-                pl.when(pl.col("trade_date") < date)
-                .then(pl.col(col) / ratio)
-                .otherwise(pl.col(col))
-                .alias(col)
-                for col in cols_to_reduce
-            ]
-            + [
-                pl.when(pl.col("trade_date") < date)
-                .then(pl.col(col) * ratio)
-                .otherwise(pl.col(col))
-                .alias(col)
-                for col in cols_to_increase
-            ]
-        )
+    df = df.with_columns(
+        [
+            (pl.col(c) / pl.col("split_factor")).alias(c)
+            for c in cols_to_reduce
+        ] + [
+            (pl.col(c) * pl.col("split_factor")).alias(c)
+            for c in cols_to_increase
+        ]
+    )
 
     return ow.DataType(df, tick)
 
@@ -402,7 +412,7 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
         # Bind all spec-level callables as default args so the lazy Polars
         # expressions don't end up using the last spec's filters (late binding).
         call_put = spec.call_put
-        strike_fn = spec.strike
+        lm_fn = spec.lm_fn
         ttm_fn = spec.ttm
         abs_delta_fn = spec.abs_delta
         entry_cond_fn = spec.entry_cond if isinstance(spec.entry_cond, List) else [spec.entry_cond]
@@ -416,8 +426,8 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
         # ---- base eligibility filters ----
         eligible = df.filter(
             (pl.col("call_put") == call_put)
-            & pl.struct(["strike"]).map_elements(
-                lambda s, fn=strike_fn: _safe_apply(s["strike"], fn)
+            & pl.struct(["log_moneyness"]).map_elements(
+                lambda s, fn=lm_fn: _safe_apply(s["log_moneyness"], fn)
             )
             & pl.struct(["ttm"]).map_elements(
                 lambda s, fn=ttm_fn: _safe_apply(s["ttm"], fn)
@@ -593,7 +603,6 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
                 expiry=expiry,
                 iv=mid_iv,
                 underlying=underlying,
-                num_underlying=r.get("num_shares"),
                 rfr=None,
                 delta=r["delta"],
                 gamma=r["gamma"],
@@ -678,6 +687,10 @@ def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
     def scale_splits_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
         return scale_splits(data, **fn_kwargs)
+
+    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
+    def log_moneyness_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
+        return log_moneyness(data, **fn_kwargs)
 
     @ow.wrap_fn(
         ow.FuncType.DATA,

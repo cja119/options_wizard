@@ -43,7 +43,6 @@ class SpreadFilteredTrade(PositionBase):
             short_size[trade.entry_data.tick] += abs(
                 entry_px.bid * abs(trade.entry_data.position_size)
                 )
-            print(entry_px)
             rec_high_low[trade.entry_data.tick] = entry_px.other.get("recent_high_low", None)
             
 

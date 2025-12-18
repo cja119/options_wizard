@@ -14,7 +14,7 @@ from .date import DateObj
 @dataclass
 class OptionsTradeSpec:
     call_put: OptionType
-    strike: Callable = field(default=lambda x: True)
+    lm_fn: Callable = field(default=lambda x: True)
     ttm: Callable = field(default=lambda x: True)
     abs_delta: Callable = field(default=lambda x: True)
     entry_cond: Callable | List[Callable]= field(default=lambda x: True)
@@ -60,7 +60,8 @@ class Spot(BaseUnderlying):
 
 @dataclass
 class Future(BaseUnderlying):
-    underlying_type: UnderlyingType = UnderlyingType.FUTURE
+    expiry: DateObj
+    underlying_type: UnderlyingType = UnderlyingType.FUTURE    
     pass
 
 
@@ -74,7 +75,6 @@ class Option(BaseUnderlying):
     # --- Optional Fields --- #
     iv: Optional[float] = field(default=None)
     underlying: Optional[BaseUnderlying] = field(default=None)
-    num_underlying: Optional[float] = field(default=None)
     rfr: Optional[float] = field(default=None)
     delta: Optional[float] = field(default=None)
     gamma: Optional[float] = field(default=None)

@@ -86,41 +86,6 @@ def idx_futures_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     joined = data().join(fut, on="trade_date", how="left")
     return ow.DataType(joined, tick)
 
-def vix_term_structure(data: ow.DataType, **kwargs) -> ow.DataType:
-    
-    from dotenv import load_dotenv
-    import os
-    import sys
-
-    load_dotenv()
-    path = os.getenv("VIX_FUTURES", "")
-    tick = kwargs.get("tick", "")
-
-    if not path or not Path(path).is_file():
-        raise FileNotFoundError("VIX futures data not found at specified path.")
-    
-    vix_fut = (
-            pl.scan_parquet(path)
-            .select(["trade_date", "UX1 Index", "UX3 Index", "UX6 Index"])
-            .rename({"UX1 Index": "1m_vix_fut", "UX3 Index": "3m_vix_fut", "UX6 Index": "6m_vix_fut"})
-        )
-    vix_fut = vix_fut.with_columns(
-            pl.col("trade_date").str.strptime(pl.Date, format="%d/%m/%Y", strict=False)
-        )
-
-    vix_fut = vix_fut.with_columns(
-            ((pl.col("6m_vix_fut") - pl.col("1m_vix_fut")) / 5).alias("grad")
-        )
-    vix_fut = vix_fut.with_columns(
-            ((pl.col("1m_vix_fut") + pl.col("6m_vix_fut") * (2/3) - pl.col("3m_vix_fut") * (1 - (2/3))) / (0.5*(2*3 + 2**2))).alias("curvature")
-    )
-
-    vix_fut = vix_fut.collect()
-
-    joined = data().join(vix_fut, on="trade_date", how="left")
-
-    return ow.DataType(joined, tick=tick)
-
 # ===========================================================
 #     PIPELINE REGISTRATION (BOTTOM OF FILE)
 # ===========================================================

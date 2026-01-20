@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Deque, TYPE_CHECKING
 from collections import deque
 from .position.base import PositionBase
+from universe import Universe
 
 from tqdm import tqdm
 from numpy import log as np_log
@@ -36,7 +37,7 @@ class BackTestCoordinator:
     def run(self) -> BackTestResult:
         self._run_backtest()
         return self._process_results()
-    
+
     def compress(self, result: BackTestResult) -> None:
 
         pass

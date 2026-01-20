@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-SAVE_ROOT = Path("tmp/put_spread_sweeps")
+SAVE_ROOT = Path("tmp/put_spread_sweeps_f50")
 PLOT_DIR = SAVE_ROOT / "plots"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -138,10 +138,13 @@ def main() -> None:
     by_sharpe = sorted(results, key=lambda r: r.sharpe, reverse=True)
     by_drawdown = sorted(results, key=lambda r: r.max_drawdown)
     by_one_month = sorted(results, key=lambda r: r.max_1m_return, reverse=True)
-
     plot_top(by_sharpe, "sharpe", "Top 5 by Sharpe", "top_by_sharpe.png")
-    plot_top(by_drawdown, "max_drawdown", "Top 5 by Lowest Max DD", "top_by_drawdown.png")
-    plot_top(by_one_month, "max_1m_return", "Top 5 by 1M Return", "top_by_1m_return.png")
+    plot_top(
+        by_drawdown, "max_drawdown", "Top 5 by Lowest Max DD", "top_by_drawdown.png"
+    )
+    plot_top(
+        by_one_month, "max_1m_return", "Top 5 by 1M Return", "top_by_1m_return.png"
+    )
 
     print_top(results, "sharpe", True, "Top 5 Sharpe")
     print_top(results, "max_drawdown", False, "Top 5 Lowest Max Drawdown")

@@ -39,6 +39,7 @@ class PositionBase(ABC):
         self._entry_idx = 0
         self._exit_idx = 0
         self._schedule_ready = False
+        self._pre_entry_exits: list[Trade] = []
 
         self._snapshot = Snapshot(
             date=config.start_date,
@@ -55,16 +56,19 @@ class PositionBase(ABC):
             self._trades.extend(trade)
 
     def __call__(self, date: DateObj) -> Snapshot:
-        if not self._schedule_ready: self._finalize_schedule()
-        
+        if not self._schedule_ready:
+            self._finalize_schedule()
+
+        # Non-mutating view of exits already due for active trades today.
+        self._pre_entry_exits = self._peek_scheduled_exits(date)
         entering, scheduled_exit = self._advance_schedule(date)
         self._sizes |= self._size_entry(entering)
-
+        
         trades_to_close, exit_cf = self.exit_trigger(self._active, date, scheduled_exit)
 
         self._update_closes(self._active, trades_to_close)
         snapshot = self._update(self._active, date, exit_cf)
-        
+
         return snapshot
 
     # ---- Abstract Methods ---- #
@@ -74,7 +78,10 @@ class PositionBase(ABC):
 
     @abstractmethod
     def exit_trigger(
-        self, live_trades: List[Trade], current_date: DateObj, scheduled_exits: Set[Trade]
+        self,
+        live_trades: List[Trade],
+        current_date: DateObj,
+        scheduled_exits: Set[Trade],
     ) -> Tuple[List[Trade], List["Cashflow"]]:
         pass
 
@@ -82,28 +89,74 @@ class PositionBase(ABC):
     def _advance_schedule(self, date):
         key = (date.year, date.month, date.day)
         entering, scheduled_exit = [], []
-        while self._entry_idx < len(self._entries) and self._entries[self._entry_idx]._entry_key == key:
-            t = self._entries[self._entry_idx]; self._active.append(t); entering.append(t); self._entry_idx += 1
-        while self._exit_idx < len(self._exits) and self._exits[self._exit_idx]._exit_key <= key:
+        missed_policy = self._kwargs.get("missed_entry_policy", "roll")
+        while self._entry_idx < len(self._entries):
+            t = self._entries[self._entry_idx]
+            if t._entry_key > key:
+                break
+            if t._entry_key < key:
+                if missed_policy == "skip":
+                    self._entry_idx += 1
+                    continue
+                # Roll forward to the next available backtest date to avoid blocking the schedule.
+                if t._exit_key < key or t.entry_data.exit_date < date:
+                    self._entry_idx += 1
+                    continue
+                t.entry_data.entry_date = date
+                t._entry_key = key
+            self._active.append(t)
+            entering.append(t)
+            self._entry_idx += 1
+        while (
+            self._exit_idx < len(self._exits)
+            and self._exits[self._exit_idx]._exit_key <= key
+        ):
             t = self._exits[self._exit_idx]
             if t in self._active and not getattr(t, "_closed", False):
                 scheduled_exit.append(t)
             self._exit_idx += 1
         return entering, scheduled_exit
 
+    def _peek_scheduled_exits(self, date: DateObj) -> list[Trade]:
+        key = (date.year, date.month, date.day)
+        idx = self._exit_idx
+        scheduled: list[Trade] = []
+        while idx < len(self._exits) and self._exits[idx]._exit_key <= key:
+            t = self._exits[idx]
+            if t in self._active and not getattr(t, "_closed", False):
+                scheduled.append(t)
+            idx += 1
+        return scheduled
+
     def _update_closes(
         self, live_trades: list[Trade], trades_to_close: Set[Trade]
     ) -> None:
         for trade in trades_to_close:
-                if trade in live_trades:
-                    live_trades.remove(trade)
+            if trade in live_trades:
+                live_trades.remove(trade)
         self._drop_trades = trades_to_close
 
     def _size_entry(self, trades: List[Trade]) -> Dict[Trade, float]:
         sizes = self.size_function(trades)
+        if not trades:
+            return sizes
+
+        dropped = []
+        applied_sizes: Dict[Trade, float] = {}
         for trade in trades:
-            trade *= sizes[trade]
-        return sizes
+            size = sizes.get(trade, 0.0)
+            if size == 0.0:
+                dropped.append(trade)
+                continue
+            trade *= size
+            applied_sizes[trade] = size
+
+        # Drop zero-sized entries so they never open or linger in snapshots.
+        if dropped:
+            for trade in dropped:
+                if trade in self._active:
+                    self._active.remove(trade)
+        return applied_sizes
 
     def _trades_on(self, date: DateObj) -> list[Trade]:
         trades = [trade for trade in self._trades if trade.is_open_on(date)]
@@ -161,7 +214,8 @@ class PositionBase(ABC):
         return snapshot
 
     def _finalize_schedule(self):
-        def key(d): return (d.year, d.month, d.day)
+        def key(d):
+            return (d.year, d.month, d.day)
 
         # Drop trades that start before the backtest window to avoid blocking the schedule
         filtered_trades = []

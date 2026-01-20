@@ -42,7 +42,7 @@ class BaseType(ABC):
     ) -> None:
         if isinstance(data, (list, Deque)):
             data = self._from_list(data)
-        self._data: None | pl.DataFrame | pl.LazyFrame  = data
+        self._data: None | pl.DataFrame | pl.LazyFrame = data
         self._tick: str = tick
 
     # --- Abstract Methods --- #
@@ -85,7 +85,9 @@ class BaseType(ABC):
             return False
 
     @classmethod
-    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> BaseType:
+    def load(
+        cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = ""
+    ) -> BaseType:
         if save_type == SaveType.PARQUET:
             load_path: Path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.parquet"
             if load_path.exists() is False:
@@ -165,7 +167,9 @@ class StratType(BaseType):
 
     @override
     @classmethod
-    def load(cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = "") -> StratType:
+    def load(
+        cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = ""
+    ) -> StratType:
         if save_type == SaveType.PARQUET:
             path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.parquet"
             if not path.exists():

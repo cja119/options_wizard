@@ -113,9 +113,7 @@ def idx_futures_logic(data: ow.DataType, **kwargs) -> ow.DataType:
     fut = (
         pl.scan_parquet(fut_path)
         .select(["date", "close"])
-        .with_columns(
-            trade_date_expr.alias("trade_date")
-        )
+        .with_columns(trade_date_expr.alias("trade_date"))
         .rename({"close": "underlying_close"})
         .select(["trade_date", "underlying_close"])
     )
@@ -141,7 +139,9 @@ def filter_gaps_opt(data: ow.DataType, **kwargs) -> ow.DataType:
 
     keys: List[str] = ["call_put", "strike", "expiry_date"]
 
-    calendar = df.select("trade_date").unique().sort("trade_date").with_row_index("day_idx")
+    calendar = (
+        df.select("trade_date").unique().sort("trade_date").with_row_index("day_idx")
+    )
 
     bounds = (
         df.group_by(keys)
@@ -156,13 +156,18 @@ def filter_gaps_opt(data: ow.DataType, **kwargs) -> ow.DataType:
         .rename({"day_idx": "start_idx"})
         .join(calendar.rename({"trade_date": "end"}), on="end", how="left")
         .rename({"day_idx": "end_idx"})
-        .with_columns((pl.col("end_idx") - pl.col("start_idx") + 1).alias("expected_count"))
-        .with_columns((pl.col("expected_count") - pl.col("present_count")).alias("n_missing"))
+        .with_columns(
+            (pl.col("end_idx") - pl.col("start_idx") + 1).alias("expected_count")
+        )
+        .with_columns(
+            (pl.col("expected_count") - pl.col("present_count")).alias("n_missing")
+        )
     )
 
-    df2 = (
-        df.join(bounds.select(keys + ["end", "n_missing"]), on=keys, how="left")
-        .with_columns((pl.col("end") - pl.col("trade_date")).alias("days_until_last_trade"))
+    df2 = df.join(
+        bounds.select(keys + ["end", "n_missing"]), on=keys, how="left"
+    ).with_columns(
+        (pl.col("end") - pl.col("trade_date")).alias("days_until_last_trade")
     )
 
     return ow.DataType(df2, kwargs.get("tick", ""))
@@ -186,7 +191,9 @@ def ttms_opt(data: ow.DataType, **kwargs) -> ow.DataType:
     df = df.lazy() if isinstance(df, pl.DataFrame) else df
     df = df.with_columns(
         (
-            (pl.col("expiry_date").cast(pl.Date) - pl.col("trade_date").cast(pl.Date)).dt.total_days()
+            (
+                pl.col("expiry_date").cast(pl.Date) - pl.col("trade_date").cast(pl.Date)
+            ).dt.total_days()
         ).alias("ttm")
     )
     return ow.DataType(df, kwargs.get("tick", ""))
@@ -195,7 +202,9 @@ def ttms_opt(data: ow.DataType, **kwargs) -> ow.DataType:
 def log_moneyness_opt(data: ow.DataType, **kwargs) -> ow.DataType:
     df = data()
     df = df.lazy() if isinstance(df, pl.DataFrame) else df
-    df = df.with_columns((pl.col("strike") / pl.col("underlying_close")).log().alias("log_moneyness"))
+    df = df.with_columns(
+        (pl.col("strike") / pl.col("underlying_close")).log().alias("log_moneyness")
+    )
     return ow.DataType(df, kwargs.get("tick", ""))
 
 
@@ -261,7 +270,10 @@ def add_idx_spread_methods_opt(pipeline: ow.Pipeline, kwargs) -> None:
     def in_universe_wrapped(data: ow.DataType, **fn_kwargs):
         return in_universe_dummy_logic(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms_wrapped, filter_out_wrapped, idx_futures_wrapped])
+    @ow.wrap_fn(
+        ow.FuncType.DATA,
+        depends_on=[ttms_wrapped, filter_out_wrapped, idx_futures_wrapped],
+    )
     def perc_spread_wrapped(data: ow.DataType, **fn_kwargs):
         return perc_spread_opt(data, **fn_kwargs)
 
@@ -271,7 +283,13 @@ def add_idx_spread_methods_opt(pipeline: ow.Pipeline, kwargs) -> None:
 
     @ow.wrap_fn(
         ow.FuncType.DATA,
-        depends_on=[load_index_data, ttms_wrapped, filter_out_wrapped, perc_spread_wrapped, idx_futures_wrapped],
+        depends_on=[
+            load_index_data,
+            ttms_wrapped,
+            filter_out_wrapped,
+            perc_spread_wrapped,
+            idx_futures_wrapped,
+        ],
     )
     def options_entry_wrapped(data: ow.DataType, **fn_kwargs):
         return options_entry(data, **fn_kwargs)

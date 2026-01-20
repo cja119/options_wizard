@@ -12,6 +12,7 @@ import numpy as np
 #   TOP-LEVEL LOGIC FUNCTIONS (IMPORTABLE, UNDECORATED)
 # ============================================================
 
+
 def load_data(**kwargs) -> ow.DataType:
     """Loads in data for the tick"""
     from dotenv import load_dotenv
@@ -60,9 +61,7 @@ def in_universe(data: ow.DataType, **kwargs) -> ow.DataType:
     elif cache_pickle.exists():
         universe_frame = pd.read_pickle(cache_pickle)
     else:
-        index_df = pd.read_csv(
-            os.getenv("INDEX_CONSTITUENTS_PATH"), na_values=na_vals
-        )
+        index_df = pd.read_csv(os.getenv("INDEX_CONSTITUENTS_PATH"), na_values=na_vals)
 
         mktcap_df = pd.read_csv(os.getenv("MKT_CAP_PATH"), na_values=na_vals)
 
@@ -82,13 +81,9 @@ def in_universe(data: ow.DataType, **kwargs) -> ow.DataType:
         index_long = index_long.rename(columns={"level_1": "col_idx", 0: "ticker"})
 
         mktcap_long = mktcap_df.stack().reset_index()
-        mktcap_long = mktcap_long.rename(
-            columns={"level_1": "col_idx", 0: "mktcap"}
-        )
+        mktcap_long = mktcap_long.rename(columns={"level_1": "col_idx", 0: "mktcap"})
 
-        merged = pd.merge(
-            index_long, mktcap_long, on=["date", "col_idx"], how="outer"
-        )
+        merged = pd.merge(index_long, mktcap_long, on=["date", "col_idx"], how="outer")
         panel = merged.pivot(index="date", columns="ticker", values="mktcap")
 
         universe_frame = panel.loc[:, ~panel.columns.str.match(r"^\d")]
@@ -137,11 +132,7 @@ def in_universe(data: ow.DataType, **kwargs) -> ow.DataType:
         .astype(bool)
     )
 
-    daily_panel = (
-        universe_frame.reindex(daily_index)
-        .ffill()
-        .where(membership)
-    )
+    daily_panel = universe_frame.reindex(daily_index).ffill().where(membership)
 
     top_n_per_date = daily_panel.apply(
         lambda row: row.dropna().nlargest(n_const).index.tolist(), axis=1
@@ -185,10 +176,7 @@ def filter_gaps(data: ow.DataType, **kwargs) -> ow.DataType:
     keys = ["call_put", "strike", "expiry_date"]
 
     calendar = (
-        df.select("trade_date")
-        .unique()
-        .sort("trade_date")
-        .with_row_index("day_idx")
+        df.select("trade_date").unique().sort("trade_date").with_row_index("day_idx")
     )
     cal_dates = calendar["trade_date"].to_list()
 
@@ -222,9 +210,7 @@ def filter_gaps(data: ow.DataType, **kwargs) -> ow.DataType:
         .alias("missing_days")
     ).with_columns(pl.col("missing_days").list.len().alias("n_missing"))
 
-    bounds = bounds.with_columns(
-        (pl.col("end") - pl.col("start")).alias("_tmp")
-    )
+    bounds = bounds.with_columns((pl.col("end") - pl.col("start")).alias("_tmp"))
 
     df2 = df.join(
         bounds.select(keys + ["end", "missing_days", "n_missing"]),
@@ -244,8 +230,7 @@ def ttms(data: ow.DataType, **kwargs) -> ow.DataType:
     df = data().with_columns(
         (
             (
-                pl.col("expiry_date").cast(pl.Date)
-                - pl.col("trade_date").cast(pl.Date)
+                pl.col("expiry_date").cast(pl.Date) - pl.col("trade_date").cast(pl.Date)
             ).dt.total_days()
         ).alias("ttm")
     )
@@ -346,12 +331,15 @@ def underlying_close(data: ow.DataType, **kwargs) -> ow.DataType:
         pl.from_pandas(hist)
         .with_columns(pl.col("Date").dt.date().alias("trade_date"))
         .rename({"Close": "underlying_close"})
-        .select(["trade_date", "underlying_close", "split_factor", "raw_underlying_close"])
+        .select(
+            ["trade_date", "underlying_close", "split_factor", "raw_underlying_close"]
+        )
     )
 
     merged_df = df.join(hist_pl, on="trade_date", how="left")
 
     return ow.DataType(merged_df.lazy(), tick)
+
 
 def log_moneyness(data: ow.DataType, **kwargs) -> ow.DataType:
     """Calculates log-moneyness for each option row."""
@@ -377,16 +365,12 @@ def scale_splits(data: ow.DataType, **kwargs) -> ow.DataType:
     cols_to_increase = ["volume", "open_interest"]
 
     df = df.with_columns(
-        [
-            (pl.col(c) / pl.col("split_factor")).alias(c)
-            for c in cols_to_reduce
-        ] + [
-            (pl.col(c) * pl.col("split_factor")).alias(c)
-            for c in cols_to_increase
-        ]
+        [(pl.col(c) / pl.col("split_factor")).alias(c) for c in cols_to_reduce]
+        + [(pl.col(c) * pl.col("split_factor")).alias(c) for c in cols_to_increase]
     )
 
     return ow.DataType(df, tick)
+
 
 def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
     import polars as pl
@@ -402,8 +386,7 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
         return False if value is None else bool(fn(value))
 
     base_cols = [
-        c for c in df.collect_schema().names()
-        if c not in ("entered", "position")
+        c for c in df.collect_schema().names() if c not in ("entered", "position")
     ]
 
     all_entries = []
@@ -415,10 +398,14 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
         lm_fn = spec.lm_fn
         ttm_fn = spec.ttm
         abs_delta_fn = spec.abs_delta
-        entry_cond_fn = spec.entry_cond if isinstance(spec.entry_cond, List) else [spec.entry_cond]
+        entry_cond_fn = (
+            spec.entry_cond if isinstance(spec.entry_cond, List) else [spec.entry_cond]
+        )
         open_interest_min = spec.open_interest_min
         volume_min = spec.volume_min
-        entry_col = spec.entry_col if isinstance(spec.entry_col, List) else [spec.entry_col]
+        entry_col = (
+            spec.entry_col if isinstance(spec.entry_col, List) else [spec.entry_col]
+        )
         minimise_col = spec.entry_min
         max_hold = spec.max_hold_period
         position = spec.position
@@ -434,9 +421,7 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
             )
             & pl.struct(["delta"]).map_elements(
                 lambda s, fn=abs_delta_fn: (
-                    False
-                    if s["delta"] is None
-                    else bool(fn(abs(s["delta"])))
+                    False if s["delta"] is None else bool(fn(abs(s["delta"])))
                 )
             )
             & (pl.col("n_missing") == 0)
@@ -450,23 +435,22 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
         if entry_col and all(col is not None for col in entry_col):
             for col, cond in zip(entry_col, entry_cond_fn):
                 eligible = eligible.filter(
-                    pl.col(col).map_elements(
-                        lambda x, fn=cond: _safe_apply(x, fn)
-                    )
+                    pl.col(col).map_elements(lambda x, fn=cond: _safe_apply(x, fn))
                 )
-            
+
         # ---- pick best per day ----
         entries = (
-            eligible
-            .with_columns(pl.col(minimise_col).abs().alias("rank_metric"))
+            eligible.with_columns(pl.col(minimise_col).abs().alias("rank_metric"))
             .sort(["trade_date", "rank_metric"])
             .group_by("trade_date")
             .head(1)
-            .with_columns([
-                pl.lit(True).alias("entered"),
-                pl.lit(position).alias("position"),
-                pl.lit(max_hold).alias("max_hold_period")
-            ])
+            .with_columns(
+                [
+                    pl.lit(True).alias("entered"),
+                    pl.lit(position).alias("position"),
+                    pl.lit(max_hold).alias("max_hold_period"),
+                ]
+            )
             .select(base_cols + ["entered", "position", "max_hold_period"])
         )
 
@@ -495,17 +479,14 @@ def options_entry(data: ow.DataType, **kwargs) -> ow.DataType:
             ]
         )
 
-    df_out = (
-        df.join(
-            entries.lazy(),
-            on=df.collect_schema().names(),
-            how="left",
-        )
-        .with_columns(
-            pl.col("entered").fill_null(False),
-            pl.col("position").fill_null(0),
-            pl.col("max_hold_period").fill_null(0),
-        )
+    df_out = df.join(
+        entries.lazy(),
+        on=df.collect_schema().names(),
+        how="left",
+    ).with_columns(
+        pl.col("entered").fill_null(False),
+        pl.col("position").fill_null(0),
+        pl.col("max_hold_period").fill_null(0),
     )
 
     return ow.DataType(df_out, tick)
@@ -516,8 +497,13 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
     from functools import lru_cache
     import polars as pl
     from options_wizard import (
-        DateObj, Option, OptionType, Spot,
-        EntryData, PositionType, PriceSeries,
+        DateObj,
+        Option,
+        OptionType,
+        Spot,
+        EntryData,
+        PositionType,
+        PriceSeries,
     )
 
     specs = kwargs.get("specs", [])
@@ -547,7 +533,9 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
         if spec is None:
             continue
 
-        exit_cond_fn = spec.exit_cond if isinstance(spec.exit_cond, List) else [spec.exit_cond]
+        exit_cond_fn = (
+            spec.exit_cond if isinstance(spec.exit_cond, List) else [spec.exit_cond]
+        )
         exit_col = spec.exit_col if isinstance(spec.exit_col, List) else [spec.exit_col]
         max_hold = trade["max_hold_period"]
 
@@ -560,8 +548,7 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
         final_exit_date = start + pl.duration(days=max_hold)
 
         feasible = group.filter(
-            (pl.col("trade_date") >= start)
-            & (pl.col("trade_date") <= final_exit_date)
+            (pl.col("trade_date") >= start) & (pl.col("trade_date") <= final_exit_date)
         )
 
         rows = feasible.to_dicts()
@@ -580,17 +567,19 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
                 ask=r["underlying_close"],
                 volume=0.0,
                 date=d,
-                tick=tick
+                tick=tick,
             )
 
             mid_iv = None
-            if r['bid_implied_volatility'] is not None and r['ask_implied_volatility'] is not None:
+            if (
+                r["bid_implied_volatility"] is not None
+                and r["ask_implied_volatility"] is not None
+            ):
                 mid_iv = (r["bid_implied_volatility"] + r["ask_implied_volatility"]) / 2
-            
+
             others = {}
             for datum in other_data:
                 others[datum] = r[datum]
-
 
             option_contract = Option(
                 bid=r["bid_price"],
@@ -609,9 +598,8 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
                 vega=r["vega"],
                 theta=r["theta"],
                 rho=r.get("rho"),
-                other=others
+                other=others,
             )
-
 
             price_series.add(option_contract)
 
@@ -627,24 +615,27 @@ def options_trade(data: ow.DataType, **kwargs) -> ow.StratType:
         if exit_date is None:
             exit_date = d  # last available date
 
-
         entry = EntryData(
             entry_date=date_obj(start),
-            position_type=PositionType.LONG if trade["position"] > 0 else PositionType.SHORT,
+            position_type=(
+                PositionType.LONG if trade["position"] > 0 else PositionType.SHORT
+            ),
             price_series=price_series,
             exit_date=exit_date,
             position_size=abs(trade["position"]),
             features=None,
-            tick=tick
+            tick=tick,
         )
 
         trades.append(entry)
 
     return ow.StratType(trades, tick)
 
+
 # ============================================================
 #                   Strategy Evaluation Pipeline
 # ============================================================
+
 
 def add_put_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     """

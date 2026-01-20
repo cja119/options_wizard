@@ -46,7 +46,9 @@ class Trade:
         ]
         return self._cash_position(price)
 
-    def __call__(self, date: DateObj, spread_capture: float = SPREAD_CAPTURE) -> Tuple[Equity | None, Cashflow | None]:
+    def __call__(
+        self, date: DateObj, spread_capture: float = SPREAD_CAPTURE
+    ) -> Tuple[Equity | None, Cashflow | None]:
 
         if spread_capture != SPREAD_CAPTURE:
             self._spread_capture = spread_capture
@@ -74,6 +76,7 @@ class Trade:
 
         return equity, cashflow
 
+    @property
     def features(self) -> "BaseTradeFeatures" | None:
         return self.entry_data.features
 
@@ -105,7 +108,7 @@ class Trade:
             return 0.0
         if self.transaction_cost_model == TransactionCostModel.SPREAD:
             spread = (price.ask - price.bid) * abs(self.entry_data.position_size)
-            return spread / 2
+            return (spread / 2) * (1 - self._spread_capture)
         else:
             return 0.0
 

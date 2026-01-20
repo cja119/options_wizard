@@ -30,9 +30,9 @@ END_DATE = ow.DateObj(2020, 12, 31)
 STOCK = "NDQ"
 DELTA_TOL = 0.02
 PROTECTED_NOTIONAL = 1_000_000
-SPREAD_CAPTURE_OVERRIDE = 1.0
+SPREAD_CAPTURE_OVERRIDE = 0.5
 
-SAVE_ROOT = Path("tmp/put_spread_sweeps")
+SAVE_ROOT = Path("tmp/put_spread_sweeps_f50")
 SAVE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
@@ -56,7 +56,7 @@ class ComboSpec:
             return f"{int(round(d * 10_000)):04d}"
 
         return (
-            f"r{self.ratio[0]}x{self.ratio[1]}"
+            f"s50_r{self.ratio[0]}x{self.ratio[1]}"
             f"_exp{self.expiry_range[0]}-{self.expiry_range[1]}"
             f"_sd{fmt_delta(self.short_delta)}"
             f"_ld{fmt_delta(self.long_delta)}"
@@ -149,7 +149,7 @@ def run_single_combo(combo: ComboSpec) -> tuple[bool, str, str]:
         ptf = partial(
             ow.Trade,
             transaction_cost_model=ow.TransactionCostModel.SPREAD,
-            accounting_type=ow.AccountingConvention.MTM,
+            accounting_type=ow.AccountingConvention.CASH,
         )
         trades = strat.reconstruct(ptf)
 
@@ -169,9 +169,7 @@ def run_single_combo(combo: ComboSpec) -> tuple[bool, str, str]:
         position = ow.FixedHoldNotional(cfg)
         position.add_trade(trades)
 
-        dates = ow.market_dates(
-            START_DATE, END_DATE, exchange=ow.Exchange.NASDAQ
-        )
+        dates = ow.market_dates(START_DATE, END_DATE, exchange=ow.Exchange.NASDAQ)
 
         result = ow.BackTestCoordinator(
             position=position,

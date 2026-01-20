@@ -1,5 +1,13 @@
 from .date import DateObj
-from .contract import Option, Future, Spot, OptionType, BaseUnderlying, OptionsTradeSpec
+from .contract import (
+    Option,
+    Future,
+    Spot,
+    OptionType,
+    BaseUnderlying,
+    OptionsTradeSpec,
+    CarryTradeSpec,
+)
 from .trade import (
     Equity,
     Cashflow,
@@ -9,6 +17,7 @@ from .trade import (
     AccountingConvention,
     PriceSeries,
     BaseTradeFeatures,
+    SpreadFeatures
 )
 
 __all__ = [
@@ -27,4 +36,6 @@ __all__ = [
     "PriceSeries",
     "BaseTradeFeatures",
     "OptionsTradeSpec",
+    "SpreadFeatures",
+    "CarryTradeSpec",
 ]

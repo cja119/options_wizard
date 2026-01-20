@@ -16,7 +16,7 @@ from .types import (
     StratType,
     ModelType,
     SaveType,
-    SAVE_PATH
+    SAVE_PATH,
 )
 
 FNS_SIG = List[Tuple[Callable, Dict[str, Any]]]
@@ -27,6 +27,7 @@ def capture_output():
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         yield stdout, stderr
+
 
 def wrap_fn(
     sig: FuncType,
@@ -129,12 +130,12 @@ class SingleTickProcessor:
                     self._tick,
                 )
                 self._exit()
-                    
+
             if self._break:
                 break
-        
+
         for h in self._err_logger.handlers:
-             h.flush()
+            h.flush()
 
         if not self._break:
             self._save(kwargs.get("suffix", ""))
@@ -220,7 +221,7 @@ class SingleTickProcessor:
             # Light-weight success flag so progress tracking treats the run as successful
             # without materializing large data when no explicit return_type is provided.
             return True
-        
+
     def _setup_error_logger(self):
         log_path = SAVE_PATH / "pipeline_errors.log"
 
@@ -228,16 +229,13 @@ class SingleTickProcessor:
         logger.setLevel(logging.INFO)
         logger.propagate = False
 
-        if not logger.handlers:   # <-- critical
+        if not logger.handlers:  # <-- critical
             handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
-            formatter = logging.Formatter(
-                "%(asctime)s | %(levelname)s | %(message)s"
-            )
+            formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
             handler.setFormatter(formatter)
             logger.addHandler(handler)
 
         self._err_logger = logger
-
 
 
 class SaveFrames(Enum):
@@ -301,6 +299,7 @@ class Pipeline:
         return strats
 
         # --- Internal Methods --- #
+
     def _run_pipeline(self) -> None:
         failed = 0
 
@@ -315,8 +314,7 @@ class Pipeline:
                 elif isinstance(result, tuple) and all(r is None for r in result):
                     failed += 1
 
-                pbar.set_postfix(failed=failed)       
-
+                pbar.set_postfix(failed=failed)
 
     def _run_single(
         self, tick: str
@@ -346,5 +344,3 @@ class Pipeline:
         else:
             self._saves = saves
         return None
-
- 

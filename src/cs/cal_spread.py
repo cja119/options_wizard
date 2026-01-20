@@ -16,21 +16,41 @@ import time
 # -----------------------------------------------------------
 
 OPT_RENAME_MAP = {
-    'date': 'trade_date',
-    'exdate': 'expiry_date',
-    'cp_flag': 'call_put',
-    'strike_price': 'strike',
-    'impl_volatility': 'bid_implied_volatility',
-    'best_bid': 'bid_price',
-    'best_offer': 'ask_price',
+    "date": "trade_date",
+    "exdate": "expiry_date",
+    "cp_flag": "call_put",
+    "strike_price": "strike",
+    "impl_volatility": "bid_implied_volatility",
+    "best_bid": "bid_price",
+    "best_offer": "ask_price",
 }
 
 OPT_DROP_MAP = [
-    'secid', 'symbol', 'symbol_flag', 'last_date', 'optionid', 'cfadj',
-    'am_settlement', 'contract_size', 'ss_flag', 'forward_price',
-    'expiry_indicator', 'root', 'suffix', 'cusip', 'ticker', 'sic',
-    'index_flag', 'exchange_d', 'class', 'issue_type', 'industry_group',
-    'issuer', 'div_convention', 'exercise_style', 'am_set_flag',
+    "secid",
+    "symbol",
+    "symbol_flag",
+    "last_date",
+    "optionid",
+    "cfadj",
+    "am_settlement",
+    "contract_size",
+    "ss_flag",
+    "forward_price",
+    "expiry_indicator",
+    "root",
+    "suffix",
+    "cusip",
+    "ticker",
+    "sic",
+    "index_flag",
+    "exchange_d",
+    "class",
+    "issue_type",
+    "industry_group",
+    "issuer",
+    "div_convention",
+    "exercise_style",
+    "am_set_flag",
 ]
 
 # ===========================================================
@@ -73,18 +93,16 @@ def earnings_dates(data: ow.DataType, **kwargs) -> ow.DataType:
         raise ValueError("EARN_DATES env var not set")
 
     earn_dates = pd.read_csv(earn_dates_path)[tick]
-    earn_dates = (
-        pd.to_datetime(earn_dates, format="%Y%m%d", errors="coerce")
-        .dt.date
-        .dropna()
-    )
+    earn_dates = pd.to_datetime(
+        earn_dates, format="%Y%m%d", errors="coerce"
+    ).dt.date.dropna()
 
     if earn_dates.empty:
         raise ValueError(f"No earnings dates found for {tick}")
 
     earns_lf = (
         pl.DataFrame({"earn_date": earn_dates})
-        .with_columns(pl.col("earn_date").cast(pl.Date))  
+        .with_columns(pl.col("earn_date").cast(pl.Date))
         .sort("earn_date")
         .lazy()
     )
@@ -121,17 +139,19 @@ def earnings_dates(data: ow.DataType, **kwargs) -> ow.DataType:
         earnings_for_asof, on="trade_date", strategy="backward", suffix="_prev"
     )
 
-    out = (
-        with_prev.rename({"td_idx_next": "next_td_idx", "td_idx_prev": "prev_td_idx"})
-        .with_columns(
-            [
-                (pl.col("next_td_idx") - pl.col("td_idx")).alias("days_to_next_earnings"),
-                (pl.col("td_idx") - pl.col("prev_td_idx")).alias("days_since_last_earnings"),
-            ]
-        )
+    out = with_prev.rename(
+        {"td_idx_next": "next_td_idx", "td_idx_prev": "prev_td_idx"}
+    ).with_columns(
+        [
+            (pl.col("next_td_idx") - pl.col("td_idx")).alias("days_to_next_earnings"),
+            (pl.col("td_idx") - pl.col("prev_td_idx")).alias(
+                "days_since_last_earnings"
+            ),
+        ]
     )
 
     return ow.DataType(out, tick)
+
 
 def is_consolidating(data: ow.DataType, **kwargs) -> ow.DataType:
 
@@ -142,20 +162,23 @@ def is_consolidating(data: ow.DataType, **kwargs) -> ow.DataType:
         df
         # --- Ensure no nulls in close before log ---
         .with_columns(
-            pl.col("underlying_close")
-            .fill_null(strategy="forward")
-            .alias("ucl")
+            pl.col("underlying_close").fill_null(strategy="forward").alias("ucl")
         )
         # --- Log returns ---
         .with_columns(
-            (pl.col("ucl").log() - pl.col("ucl").log().shift(1))
-            .alias("log_return")
+            (pl.col("ucl").log() - pl.col("ucl").log().shift(1)).alias("log_return")
         )
         # --- Rolling vol windows ---
-        .with_columns([
-            pl.col("log_return").rolling_std(window_size=20).alias("volatility_20d"),
-            pl.col("log_return").rolling_std(window_size=60).alias("volatility_60d"),
-        ])
+        .with_columns(
+            [
+                pl.col("log_return")
+                .rolling_std(window_size=20)
+                .alias("volatility_20d"),
+                pl.col("log_return")
+                .rolling_std(window_size=60)
+                .alias("volatility_60d"),
+            ]
+        )
         # --- Percentile of vol20 ---
         .with_columns(
             pl.col("volatility_20d")
@@ -165,10 +188,9 @@ def is_consolidating(data: ow.DataType, **kwargs) -> ow.DataType:
         # --- Consolidation flag ---
         .with_columns(
             (
-                (pl.col("volatility_20d") < 0.5 * pl.col("volatility_60d")) &
-                (pl.col("volatility_20d") < pl.col("vol20_p20"))
-            )
-            .alias("is_consolidating")
+                (pl.col("volatility_20d") < 0.5 * pl.col("volatility_60d"))
+                & (pl.col("volatility_20d") < pl.col("vol20_p20"))
+            ).alias("is_consolidating")
         )
     )
 
@@ -203,16 +225,18 @@ def rec_high_low(data: ow.DataType, **kwargs) -> ow.DataType:
     # ============================================================
     # underlying_close may be null on some dates → fill forward/backward
     ts = (
-        df
-        .group_by("trade_date")
-        .agg([
-            pl.col("underlying_close").first().alias("underlying_close"),
-            pl.col("ttm").max().alias("ttm"),    # longest window per day
-        ])
+        df.group_by("trade_date")
+        .agg(
+            [
+                pl.col("underlying_close").first().alias("underlying_close"),
+                pl.col("ttm").max().alias("ttm"),  # longest window per day
+            ]
+        )
         .sort("trade_date")
         .with_columns(
-            pl.col("underlying_close").fill_null(strategy="forward")
-                                       .fill_null(strategy="backward")
+            pl.col("underlying_close")
+            .fill_null(strategy="forward")
+            .fill_null(strategy="backward")
         )
     )
 
@@ -255,12 +279,16 @@ def rec_high_low(data: ow.DataType, **kwargs) -> ow.DataType:
         recent_low[i] = prices[mindq[0]]
 
     # Add results back to the daily series
-    ts2 = ts.with_columns([
-        pl.Series("recent_high", recent_high),
-        pl.Series("recent_low", recent_low),
-        (pl.Series("recent_high", recent_high) -
-         pl.Series("recent_low", recent_low)).alias("recent_high_low")
-    ])
+    ts2 = ts.with_columns(
+        [
+            pl.Series("recent_high", recent_high),
+            pl.Series("recent_low", recent_low),
+            (
+                pl.Series("recent_high", recent_high)
+                - pl.Series("recent_low", recent_low)
+            ).alias("recent_high_low"),
+        ]
+    )
 
     # ============================================================
     # 3) Join daily metrics back to *all option rows*
@@ -271,6 +299,7 @@ def rec_high_low(data: ow.DataType, **kwargs) -> ow.DataType:
         out_df = out_df.lazy()
 
     return ow.DataType(out_df, tick=tick)
+
 
 # ===========================================================
 #                   Strategy Evaluation Pipeline
@@ -298,19 +327,19 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.LOAD)
     def load_data_wrapped(**fn_kwargs) -> ow.DataType:
         return load_data(**fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[])
     def ttms_wrapped(data: ow.DataType, **fn_kwargs):
         return ttms(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[])
     def filter_gaps_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
         return filter_gaps(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA)
     def underlying_close_wrapped(data: ow.DataType, **fn_kwargs):
         return underlying_close(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
     def earnings_dates_wrapped(data: ow.DataType, **fn_kwargs):
         return earnings_dates(data, **fn_kwargs)
@@ -318,11 +347,13 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
     def filter_out_wrapped(data: ow.DataType, **fn_kwargs):
         return filter_out(data, **fn_kwargs)
-    
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[earnings_dates_wrapped, filter_out_wrapped])
+
+    @ow.wrap_fn(
+        ow.FuncType.DATA, depends_on=[earnings_dates_wrapped, filter_out_wrapped]
+    )
     def is_consolidating_wrapped(data: ow.DataType, **fn_kwargs):
         return is_consolidating(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA)
     def scale_splits_wrapped(data: ow.DataType, **fn_kwargs):
         return scale_splits(data, **fn_kwargs)
@@ -330,16 +361,19 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.DATA)
     def in_universe_wrapped(data: ow.DataType, **fn_kwargs):
         return in_universe(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA)
     def rec_high_low_wrapped(data: ow.DataType, **fn_kwargs):
         return rec_high_low(data, **fn_kwargs)
-    
+
     @ow.wrap_fn(ow.FuncType.DATA, depends_on=[load_data_wrapped])
     def log_moneyness_wrapped(data: ow.DataType, **fn_kwargs) -> ow.DataType:
         return log_moneyness(data, **fn_kwargs)
 
-    @ow.wrap_fn(ow.FuncType.DATA, depends_on=[ttms_wrapped, filter_out_wrapped, underlying_close_wrapped])
+    @ow.wrap_fn(
+        ow.FuncType.DATA,
+        depends_on=[ttms_wrapped, filter_out_wrapped, underlying_close_wrapped],
+    )
     def perc_spread_wrapped(data: ow.DataType, **fn_kwargs):
         return perc_spread(data, **fn_kwargs)
 
@@ -360,5 +394,5 @@ def add_cal_spread_methods(pipeline: ow.Pipeline, kwargs) -> None:
     @ow.wrap_fn(ow.FuncType.STRAT, depends_on=[options_entry_wrapped])
     def options_trade_wrapped(data: ow.DataType, **fn_kwargs):
         return options_trade(data, **fn_kwargs)
-    
+
     return None

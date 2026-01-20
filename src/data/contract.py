@@ -17,7 +17,7 @@ class OptionsTradeSpec:
     lm_fn: Callable = field(default=lambda x: True)
     ttm: Callable = field(default=lambda x: True)
     abs_delta: Callable = field(default=lambda x: True)
-    entry_cond: Callable | List[Callable]= field(default=lambda x: True)
+    entry_cond: Callable | List[Callable] = field(default=lambda x: True)
     entry_col: Optional[str] | List[Optional[str]] = field(default=None)
     exit_cond: Callable | List[Callable] = field(default=lambda x: False)
     exit_col: Optional[str] | List[Optional[str]] = field(default=None)
@@ -26,9 +26,28 @@ class OptionsTradeSpec:
     entry_min: str = "perc_spread"
     max_hold_period: int = 30
     position: float = 1.0
-    
+
+
+@dataclass
+class CarryTradeSpec:
+    tenor_targets: List[int]    
+    exposure_targets: List[float]
+    roll_target: int
+    metric: str  # "FRONT_CARRY" or "SPREAD_CARRY"
+    spread_override_bps: Optional[float] = field(default=None)
+
+    def __post_init__(self):
+        if len(self.tenor_targets) != len(self.exposure_targets):
+            raise ValueError("Tenor targets and exposure targets must be the same length")
+        if sum(self.exposure_targets) != 0.0:
+            raise ValueError("Exposure targets must sum to zero")
+        if self.metric not in ["FRONT_RELATIVE", "INTERNAL"]:
+            raise ValueError("Metric must be either FRONT_RELATIVE or INTERNAL")
+
+
 @dataclass
 class BaseUnderlying(Serializable, ABC):
+    # --- Required Fields --- #
     bid: float
     ask: float
     volume: float
@@ -60,8 +79,15 @@ class Spot(BaseUnderlying):
 
 @dataclass
 class Future(BaseUnderlying):
+    # --- Required Fields --- #
     expiry: DateObj
-    underlying_type: UnderlyingType = UnderlyingType.FUTURE    
+    contract_id: str
+
+    # -- Optional Fields --- #
+    underlying_type: UnderlyingType = UnderlyingType.FUTURE
+    settlement_price: Optional[float] = field(default=None)
+    contract_multiplier: Optional[float] = field(default=None)
+    open_interest: Optional[float] = field(default=None)
     pass
 
 

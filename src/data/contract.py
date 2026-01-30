@@ -39,10 +39,10 @@ class CarryTradeSpec:
     def __post_init__(self):
         if len(self.tenor_targets) != len(self.exposure_targets):
             raise ValueError("Tenor targets and exposure targets must be the same length")
-        if sum(self.exposure_targets) != 0.0:
+        if abs(sum(self.exposure_targets)) > 1e-6:
             raise ValueError("Exposure targets must sum to zero")
-        if self.metric not in ["FRONT_RELATIVE", "INTERNAL"]:
-            raise ValueError("Metric must be either FRONT_RELATIVE or INTERNAL")
+        if self.metric not in ["smoothed_relative_carry", "raw_relative_carry", "raw_carry", "smoothed_carry"]:
+            raise ValueError("Metric must be either 'raw_carry', 'smoothed_relative_carry', 'raw_relative_carry', or 'smoothed_carry'")
 
 
 @dataclass
@@ -69,6 +69,7 @@ class UnderlyingType(str, Enum):
     OPTION = "Option"
     FUTURE = "Future"
     SPOT = "Spot"
+    INTRADAY_PERF = "IntraDayPerf"
 
 
 @dataclass
@@ -114,6 +115,12 @@ class Option(BaseUnderlying):
 
     def __hash__(self) -> int:
         return hash((self.option_type, self.strike, self.expiry, self.date))
+
+
+@dataclass
+class IntraDayPerf(BaseUnderlying):
+    underlying_type: UnderlyingType = UnderlyingType.INTRADAY_PERF
+    pass
 
 
 def infer_underlying_type(d: dict) -> Type["BaseUnderlying"]:

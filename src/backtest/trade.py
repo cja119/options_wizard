@@ -15,6 +15,7 @@ from data.trade import (
 )
 
 from data.date import DateObj
+from . import diagnostics as bt_diag
 
 SPREAD_CAPTURE = 1.0
 
@@ -90,6 +91,30 @@ class Trade:
     def close(self, date: DateObj) -> Tuple[Equity, Cashflow]:
         date = self._nearest_date_above(date)
         self.entry_data.exit_date = date
+        if (not self._opened) and date == self.entry_data.entry_date:
+            entry_cashflow = self._initialize_trade()
+            exit_cashflow = self._close_trade()
+            warn_msg = (
+                "WARNING same-day exit before open | "
+                f"tick={self.entry_data.tick} | "
+                f"entry={self.entry_data.entry_date.to_iso()} | "
+                f"exit={date.to_iso()} | "
+                f"pos={self.entry_data.position_type.name} | "
+                f"size={self.entry_data.position_size}"
+            )
+            bt_diag.log_same_day_exit(warn_msg)
+            net_amount = 0.0
+            if entry_cashflow is not None:
+                net_amount += entry_cashflow.amount
+            if exit_cashflow is not None:
+                net_amount += exit_cashflow.amount
+            cashflow = Cashflow(
+                date=date,
+                amount=net_amount,
+                accounting_convention=self.accounting_type,
+                parent_trade=self,
+            )
+            return None, cashflow
         equity, cashflow = self(date)
         return equity, cashflow
 

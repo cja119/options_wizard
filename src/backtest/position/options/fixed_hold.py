@@ -1,5 +1,6 @@
 from typing import List, Dict, Tuple
-from ..base import PositionBase
+from collections import deque
+from ..base import PositionBase, BackTestConfig
 
 from data.date import DateObj
 from data.trade import Cashflow
@@ -11,6 +12,19 @@ from typing import override
 class FixedHoldNotional(PositionBase):
     _carry = 0.0
     _notional_exposure = None
+    _carry_window = 5
+
+    def __init__(self, config: BackTestConfig) -> None:
+        super().__init__(config)
+        window = self._kwargs.get("carry_window", self._carry_window)
+        try:
+            window = int(window)
+        except Exception:
+            window = self._carry_window
+        if window < 0:
+            window = 0
+        self._carry_window = window
+        self._carry = deque(maxlen=window)
 
     @override
     def size_function(self, entering_trades: List[Trade]) -> Dict[Trade, float]:
@@ -20,12 +34,14 @@ class FixedHoldNotional(PositionBase):
 
         # If nothing to enter today, roll the daily budget forward once
         if not entering_trades:
-            self._carry += notional
+            if self._carry_window > 0:
+                self._carry.append(notional)
             return {}
 
         # Deploy the accumulated budget across all trades entering today
-        notional += self._carry
-        self._carry = 0.0
+        if self._carry_window > 0:
+            notional += sum(self._carry)
+            self._carry.clear()
 
         # Anchor sizing on short-leg exposure per ticker so each name gets the
         # same notional allocation on a given day, regardless of how many legs
@@ -52,7 +68,8 @@ class FixedHoldNotional(PositionBase):
 
         if not short_exp_by_tick:
             # No meaningful anchor to size off today; roll budget forward.
-            self._carry += notional
+            if self._carry_window > 0:
+                self._carry.append(notional)
             return {trade: 0.0 for trade in entering_trades}
 
         per_tick_budget = notional / len(short_exp_by_tick)

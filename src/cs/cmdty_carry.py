@@ -126,7 +126,11 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
     carry_spec = kwargs.get("carry_spec", None)
     tick = kwargs.get("tick", None)
     vol_window = kwargs.get("vol_window", 60)
-    front_carry = True if carry_spec.metric == "FRONT_RELATIVE" else False
+    smoothing_lookback = kwargs.get("smoothing_lookback", 5)
+    smoothing_alpha = 2 / (smoothing_lookback + 1)
+    relative_carry = True if (
+        carry_spec.metric == "FRONT_RELATIVE"
+          or carry_spec.metric == "SMOOTHED_RELATIVE_CARRY") else False
     
     # Unpack carry spec
     roll_target = carry_spec.roll_target
@@ -149,6 +153,7 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
     lg_rets = deque(maxlen=vol_window)
     exdates = deque(maxlen=vol_window)
     durations = deque(maxlen=vol_window)
+    last_carry, front_carry, last_relative_carry = 0.0, 0.0, 0.0
 
     # Need to iterate in order
     dates = base.select("Date").unique().sort("Date").to_series().to_list()
@@ -157,8 +162,25 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
         group = group.sort("DAYS_TO_ANCHOR")
         date = date[0] if isinstance(date, (list, tuple)) else date
 
+        # If we are about to roll, this is a good time to evalutate curve
+        # steepness at the front end as we have a front contract close to spot.
+        excludes = group.filter(pl.col("DAYS_TO_ANCHOR") <= roll_target)
+        group = group.filter(pl.col("DAYS_TO_ANCHOR") > roll_target)
+        if excludes.height > 0:
+            # There will be only one contract here due to roll filtering
+            front_price = excludes.select(pl.col("PX_SETTLE")).to_series().to_list()[0]
+            second_price = group.select(pl.col("PX_SETTLE")).to_series().to_list()[0]
+
+            # Take dtes for calculation
+            front_dte = excludes.select(pl.col("DAYS_TO_ANCHOR")).to_series().to_list()[0]
+            second_dte = group.select(pl.col("DAYS_TO_ANCHOR")).to_series().to_list()[0]
+            
+            # Safe carry calculation
+            front_denom = (second_dte - front_dte)
+            if front_denom > 0 and front_price > 0 and second_price > 0:
+                front_carry = np.log(second_price / front_price) * (252.0 / front_denom)
+
         # Drop contracts within roll_target
-        group = group.filter(pl.col("DAYS_TO_FRONT_ANCHOR") > roll_target)
         if group.height == 0:
             continue
 
@@ -170,6 +192,9 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
         front_multip = 1.0 #group.select(pl.col("FUT_CONT_SIZE").first()).item()
 
         cum_carry = 0.0
+        cum_rel_carry = - front_carry
+        prev_price = front_price
+        prev_dte = front_dte
         contract_ids = []
         last_dts = []
 
@@ -178,20 +203,23 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
                 continue
 
             denom = (row["DAYS_TO_ANCHOR"] - front_dte)
-            if denom <= 0:
+            rel_denom = (row["DAYS_TO_ANCHOR"] - prev_dte)
+            if denom <= 0 or rel_denom <= 0:
                 continue
 
             carry = np.log(row["PX_SETTLE"] / front_price) * (252.0 / denom)
+            rel_carry = np.log(row["PX_SETTLE"] / prev_price) * (252.0 / rel_denom) 
 
             tenor_pos = i + 1  # position in filtered curve
             if tenor_pos in tenor_targets:
                 target_idx = tenor_targets.index(tenor_pos)
                 cum_carry += carry * float(exposure_targets[target_idx])
+                cum_rel_carry += rel_carry * float(exposure_targets[target_idx])
                 contract_ids.append(row["Contract"])
-
-            if not front_carry:
-                front_price = row["PX_SETTLE"]
-                front_dte = row["DAYS_TO_ANCHOR"]
+            
+            # Update prev values
+            prev_price = row["PX_SETTLE"]
+            prev_dte = row["DAYS_TO_ANCHOR"]
 
             last_dts.append(last_dt_map[row["Contract"]])
 
@@ -203,7 +231,10 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
 
         spread_features = ow.SpreadFeatures(
             other_contracts=tuple(contract_ids),
-            carry_score=cum_carry,
+            raw_carry = cum_carry,
+            smoothed_carry=cum_carry * smoothing_alpha + last_carry * (1 - smoothing_alpha),
+            raw_relative_carry = cum_rel_carry,
+            smoothed_relative_carry=cum_rel_carry * smoothing_alpha + last_relative_carry * (1 - smoothing_alpha),
             notional_exposure = 2 * front_price * front_multip * abs(exposure_targets[0]),
             volatility = np.std(rets) * np.sqrt(365) if len(rets) > 1 else 0.0
         )
@@ -211,6 +242,11 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
         price_series = {}
         positions = {}
         position_sizes = {}
+
+        last_carry = cum_carry
+        last_relative_carry = cum_rel_carry
+
+        carry_direction = cum_rel_carry if relative_carry else cum_carry
 
         # Now we have the cumulative carry metric for this date, we can log trades
         for i, row in enumerate(group.iter_rows(named=True)):
@@ -221,9 +257,9 @@ def carry_entry(data: "ow.DataType", **kwargs) -> "ow.DataType":
                 
                 contract = row["Contract"]
                 if tenor_pos == tenor_targets[0]:
-                    positions[contract] = ow.PositionType.LONG if cum_carry < 0 else ow.PositionType.SHORT
+                    positions[contract] = ow.PositionType.LONG if carry_direction < 0 else ow.PositionType.SHORT
                 else:
-                    positions[contract] = ow.PositionType.SHORT if cum_carry < 0 else ow.PositionType.LONG
+                    positions[contract] = ow.PositionType.SHORT if carry_direction < 0 else ow.PositionType.LONG
                 
 
                 # Extracting all contracts for this tenor position

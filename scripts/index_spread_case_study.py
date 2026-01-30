@@ -1,33 +1,33 @@
 """
-Backtest a 3-leg short put ladder and visualise its performance.
+Run a single short/long put structure on the index and export equity series.
 
-Setup:
-- 1 short put at ~45 delta
-- 1 long put at ~20 delta
-- 1 long put at ~15 delta
-- Minimise entry by time-to-maturity inside a 120-180d window, hold 120d
-- Transaction costs: 50% spread capture (same assumption as f50 case studies)
+Exit logic:
+- Close all legs if the short hits SHORT_DELTA_LIM (upper abs-delta limit)
+- Roll the entry notional into the next entry day when that happens
 
-Outputs:
-- Stacked plot: strategy payoff (equity), underlying curve, drawdown
-- Annualised simple return (no compounding), Sharpe ratio, and max drawdown
-- Entry-day IV / skew plot: short entry IV and long-short skew (near/far OTM)
+Args:
+  --short_delta: abs delta for the short put
+  --long_delta: abs delta for the long put
+  --otm_ratio: number of long contracts per short
+  --short_delta_lim: upper abs-delta limit for the short
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import argparse
 from functools import partial
 from operator import eq, le
 from pathlib import Path
 from typing import Dict, List
-import argparse
 
 import matplotlib.pyplot as plt
 import numpy as np
 import options_wizard as ow
 import pandas as pd
 import yfinance as yf
+from backtest.position.options.fixed_hold_delta_exit import (
+    FixedHoldNotionalDeltaExitShortLimitRoll,
+)
 
 # -----------------------------------------------------------
 #                    CONFIG
@@ -38,45 +38,33 @@ END_DATE = ow.DateObj(2020, 12, 31)
 STOCK = "NDQ"
 DELTA_TOL = 0.02
 PROTECTED_NOTIONAL = 1_000_000
-SPREAD_CAPTURE_OVERRIDE = (
-    0.5  # capture half the spread; set to 0.0 to pay full half-spread
-)
+SPREAD_CAPTURE_OVERRIDE = 0.5  # capture half the spread
 EXPIRY_RANGE = (120, 180)
 HOLD_PERIOD = 120
 UNDERLYING_TICKER = "^IXIC"
-PLOT_PATH = Path("tmp/short_put_ladder.png")
-IV_SKEW_PLOT_PATH = Path("tmp/short_put_ladder_iv_skew.png")
-IV_CURVATURE_PLOT_PATH = Path("tmp/short_put_ladder_iv_curvature.png")
 TRADING_DAYS = 252
+SHORT_DELTA_LIM = 0.55
+
+PLOT_ROOT = Path("tmp")
+IV_SKEW_ROOT = Path("tmp")
+EQUITY_CSV_ROOT = Path("tmp")
+HOLD_HIST_ROOT = Path("tmp")
 
 PALETTE = {
     "equity": "#1f77b4",
     "underlying": "#111827",
     "drawdown": "#d9534f",
     "combined": "#f59e0b",
+    "delta": "#f59e0b",
     "short_iv": "#1b9e77",
     "skew_near": "#d62728",
     "skew_far": "#9467bd",
-    "curvature": "#ff7f0e",
 }
 
 
 # -----------------------------------------------------------
 #                    SPEC HELPERS
 # -----------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class LadderLeg:
-    delta: float
-    position: float  # negative for short, positive for long
-
-
-LEGS: List[LadderLeg] = [
-    LadderLeg(delta=0.45, position=-1.0),  # short ~45 delta
-    LadderLeg(delta=0.20, position=1.0),  # long ~20 delta
-    LadderLeg(delta=0.10, position=2.0),  # long ~15 delta
-]
 
 
 def _delta_filter(target: float):
@@ -89,20 +77,32 @@ def _ttm_filter(t: float) -> bool:
     return (t >= EXPIRY_RANGE[0]) and (t <= EXPIRY_RANGE[1])
 
 
-def build_specs() -> List[ow.OptionsTradeSpec]:
+def build_specs(
+    short_delta: float, long_delta: float, otm_ratio: int
+) -> List[ow.OptionsTradeSpec]:
     specs = []
-    for leg in LEGS:
-        specs.append(
-            ow.OptionsTradeSpec(
-                call_put=ow.OptionType.PUT,
-                ttm=_ttm_filter,
-                lm_fn=lambda k: True,
-                abs_delta=_delta_filter(leg.delta),
-                entry_min="ttm",
-                max_hold_period=HOLD_PERIOD,
-                position=leg.position,
-            )
+    specs.append(
+        ow.OptionsTradeSpec(
+            call_put=ow.OptionType.PUT,
+            ttm=_ttm_filter,
+            lm_fn=lambda k: True,
+            abs_delta=_delta_filter(short_delta),
+            entry_min="ttm",
+            max_hold_period=HOLD_PERIOD,
+            position=-1.0,
         )
+    )
+    specs.append(
+        ow.OptionsTradeSpec(
+            call_put=ow.OptionType.PUT,
+            ttm=_ttm_filter,
+            lm_fn=lambda k: True,
+            abs_delta=_delta_filter(long_delta),
+            entry_min="ttm",
+            max_hold_period=HOLD_PERIOD,
+            position=float(otm_ratio),
+        )
+    )
     return specs
 
 
@@ -111,55 +111,129 @@ def build_specs() -> List[ow.OptionsTradeSpec]:
 # -----------------------------------------------------------
 
 
-def run_short_put_ladder(
-    suffix: str = "short_put_ladder",
-    return_trades: bool = False,
-    load_existing: bool = False,
-) -> ow.BackTestResult | tuple[ow.BackTestResult, List[ow.Trade]]:
-    if not load_existing:
-        specs = build_specs()
-        universe = ow.Universe([STOCK])
-        pipeline = ow.Pipeline(
-            universe=universe,
-            save_type=ow.SaveType.PICKLE,
-            saves=[ow.SaveFrames.STRAT],
-        )
+def _fmt_delta(delta: float) -> str:
+    return f"{int(round(delta * 10_000)):04d}"
 
-        kwargs: Dict = {
-            "max_date": END_DATE.to_pl(),
-            "keep_col": ["call_put", "ttm", "n_missing"],
-            "keep_oper": [eq, le, le],
-            "keep_val": ["p", EXPIRY_RANGE[1], 0],
-            "specs": specs,
-            "hold_period": HOLD_PERIOD,
-            "protected_notional": PROTECTED_NOTIONAL,
-            "suffix": suffix,
-        }
 
-        ow.add_idx_spread_methods_opt(pipeline, kwargs)
-        pipeline.run()
+def _suffix_from_params(short_delta: float, long_delta: float, otm_ratio: int) -> str:
+    return (
+        "index_spread_case"
+        f"_sd{_fmt_delta(short_delta)}"
+        f"_ld{_fmt_delta(long_delta)}"
+        f"_r{otm_ratio}"
+    )
 
-    strat = ow.StratType.load(STOCK, save_type=ow.SaveType.PICKLE, suffix=suffix)
+
+def _csv_path_from_params(
+    short_delta: float, long_delta: float, otm_ratio: int
+) -> Path:
+    suffix = _suffix_from_params(short_delta, long_delta, otm_ratio)
+    return EQUITY_CSV_ROOT / f"{suffix}_equity.csv"
+
+
+def _plot_path_from_params(
+    short_delta: float, long_delta: float, otm_ratio: int
+) -> Path:
+    suffix = _suffix_from_params(short_delta, long_delta, otm_ratio)
+    return PLOT_ROOT / f"{suffix}.png"
+
+
+def _iv_skew_path_from_params(
+    short_delta: float, long_delta: float, otm_ratio: int
+) -> Path:
+    suffix = _suffix_from_params(short_delta, long_delta, otm_ratio)
+    return IV_SKEW_ROOT / f"{suffix}_iv_skew.png"
+
+
+def _hold_hist_path_from_params(
+    short_delta: float, long_delta: float, otm_ratio: int
+) -> Path:
+    suffix = _suffix_from_params(short_delta, long_delta, otm_ratio)
+    return HOLD_HIST_ROOT / f"{suffix}_hold_hist.png"
+
+
+def _load_or_build_strat(specs: List[ow.OptionsTradeSpec], suffix: str) -> ow.StratType:
+    try:
+        return ow.StratType.load(STOCK, save_type=ow.SaveType.PICKLE, suffix=suffix)
+    except Exception:
+        pass
+
+    universe = ow.Universe([STOCK])
+    pipeline = ow.Pipeline(
+        universe=universe,
+        save_type=ow.SaveType.PICKLE,
+        saves=[ow.SaveFrames.STRAT],
+    )
+
+    kwargs: Dict = {
+        "max_date": END_DATE.to_pl(),
+        "keep_col": ["call_put", "ttm", "n_missing"],
+        "keep_oper": [eq, le, le],
+        "keep_val": ["p", EXPIRY_RANGE[1], 0],
+        "specs": specs,
+        "hold_period": HOLD_PERIOD,
+        "protected_notional": PROTECTED_NOTIONAL,
+        "suffix": suffix,
+    }
+
+    ow.add_idx_spread_methods_opt(pipeline, kwargs)
+    pipeline.run()
+    return ow.StratType.load(STOCK, save_type=ow.SaveType.PICKLE, suffix=suffix)
+
+
+def load_strat(
+    short_delta: float, long_delta: float, otm_ratio: int, suffix: str
+) -> ow.StratType:
+    specs = build_specs(short_delta, long_delta, otm_ratio)
+    return _load_or_build_strat(specs, suffix)
+
+
+def load_trades(
+    short_delta: float,
+    long_delta: float,
+    otm_ratio: int,
+    suffix: str,
+) -> List[ow.Trade]:
+    strat = load_strat(short_delta, long_delta, otm_ratio, suffix)
     ptf = partial(
         ow.Trade,
         transaction_cost_model=ow.TransactionCostModel.SPREAD,
         accounting_type=ow.AccountingConvention.CASH,
     )
     trades = strat.reconstruct(ptf)
-
     for trade in trades or []:
         try:
             trade._spread_capture = SPREAD_CAPTURE_OVERRIDE
         except Exception:
             pass
+    return trades
+
+
+def run_structure(
+    short_delta: float,
+    long_delta: float,
+    otm_ratio: int,
+    suffix: str,
+    return_trades: bool = False,
+    short_delta_lim: float = SHORT_DELTA_LIM,
+) -> ow.BackTestResult | tuple[ow.BackTestResult, List[ow.Trade]]:
+    trades = load_trades(short_delta, long_delta, otm_ratio, suffix)
 
     cfg = ow.BackTestConfig(
         starting_cash=PROTECTED_NOTIONAL,
         start_date=START_DATE,
         end_date=END_DATE,
-        kwargs={"hold_period": HOLD_PERIOD, "protected_notional": PROTECTED_NOTIONAL},
+        kwargs={
+            "hold_period": HOLD_PERIOD,
+            "protected_notional": PROTECTED_NOTIONAL,
+            "short_abs_delta_lower": None,
+            "short_abs_delta_upper": None,
+            "short_abs_delta_limit": short_delta_lim,
+            "long_abs_delta_lower": None,
+            "long_abs_delta_upper": None,
+        },
     )
-    position = ow.FixedHoldNotional(cfg)
+    position = FixedHoldNotionalDeltaExitShortLimitRoll(cfg)
     position.add_trade(trades)
 
     dates = ow.market_dates(START_DATE, END_DATE, exchange=ow.Exchange.NASDAQ)
@@ -218,20 +292,6 @@ def _entry_option(trade: ow.Trade):
     return trade.entry_data.price_series.prices.get(entry_date.to_iso())
 
 
-def _opt_underlying_mid(opt: ow.Option) -> float | None:
-    und = getattr(opt, "underlying", None)
-    if und is None:
-        return None
-    bid = getattr(und, "bid", None)
-    ask = getattr(und, "ask", None)
-    if bid is None or ask is None:
-        return None
-    try:
-        return (float(bid) + float(ask)) / 2.0
-    except Exception:
-        return None
-
-
 def _entry_iv_delta_strike(trade: ow.Trade):
     opt = _entry_option(trade)
     if not isinstance(opt, ow.Option):
@@ -241,19 +301,7 @@ def _entry_iv_delta_strike(trade: ow.Trade):
         return None
     delta = getattr(opt, "delta", None)
     strike = getattr(opt, "strike", None)
-    mny = None
-    spot_mid = _opt_underlying_mid(opt)
-    if spot_mid and strike:
-        try:
-            mny = float(np.log(float(strike) / float(spot_mid)))
-        except Exception:
-            mny = None
-    if mny is None and delta is not None:
-        try:
-            mny = float(delta)
-        except Exception:
-            mny = None
-    return float(iv), delta, strike, mny
+    return float(iv), delta, strike
 
 
 def _trades_by_entry(trades: List[ow.Trade]) -> Dict[pd.Timestamp, List[ow.Trade]]:
@@ -283,9 +331,7 @@ def _short_entry_iv_series(trades: List[ow.Trade]) -> pd.Series:
     return pd.Series(values, dtype=float).sort_index()
 
 
-def _pick_near_far_long(
-    long_meta: List[tuple[float, float | None, float | None, float | None]],
-):
+def _pick_near_far_long(long_meta: List[tuple[float, float | None, float | None]]):
     if not long_meta:
         return None, None
     with_delta = [m for m in long_meta if m[1] is not None]
@@ -369,96 +415,74 @@ def _drawdown_from_equity(equity: pd.Series) -> pd.Series:
     return (equity_rel.cummax() - equity_rel) / equity_rel.cummax()
 
 
-def _three_point_second_derivative(
-    p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float]
-) -> float | None:
-    x0, f0 = p0
-    x1, f1 = p1
-    x2, f2 = p2
-    if x0 == x1 or x0 == x2 or x1 == x2:
+def _price_on_date(trade: ow.Trade, date: ow.DateObj):
+    price_series = trade.entry_data.price_series
+    px = price_series.get(date)
+    if px is not None:
+        return px
+    try:
+        nearest = trade._nearest_date_below(date)
+    except Exception:
         return None
-    return 2.0 * (
-        (f0 - f1) / ((x0 - x1) * (x0 - x2)) + (f2 - f1) / ((x2 - x1) * (x2 - x0))
+    return price_series.get(nearest)
+
+
+def _portfolio_delta_series(result: ow.BackTestResult) -> pd.Series:
+    if not result.snapshots:
+        return pd.Series(dtype=float)
+    values: Dict[pd.Timestamp, float] = {}
+    for snapshot in result.snapshots:
+        total_delta = 0.0
+        total_contracts = 0.0
+        for trade in snapshot.trade_equities.keys():
+            entry = trade.entry_data
+            if entry is None:
+                continue
+            px = _price_on_date(trade, snapshot.date)
+            delta = getattr(px, "delta", None) if px is not None else None
+            if delta is None:
+                continue
+            pos_sign = 1.0 if entry.position_type == ow.PositionType.LONG else -1.0
+            position_size = float(entry.position_size)
+            held_contracts = position_size * pos_sign
+            total_delta += held_contracts * float(delta)
+            total_contracts += abs(held_contracts)
+        ts = pd.to_datetime(snapshot.date.to_datetime()).normalize()
+        if total_contracts > 0:
+            avg_delta = total_delta / total_contracts
+            values[ts] = float(np.clip(avg_delta, -1.0, 1.0))
+        else:
+            values[ts] = 0.0
+    return pd.Series(values, dtype=float).sort_index()
+
+
+def equity_underlying_frame(result: ow.BackTestResult) -> pd.DataFrame:
+    equity = _equity_series(result)
+    if equity.empty:
+        return pd.DataFrame(columns=["underlying_equity", "strategy_payoff"])
+    dates = equity.index
+    underlying = load_underlying_series(dates.min(), dates.max())
+    underlying = underlying.reindex(dates, method="ffill")
+    frame = pd.DataFrame(
+        {"underlying_equity": underlying, "strategy_payoff": equity}, index=dates
     )
+    frame.index.name = "date"
+    return frame.sort_index()
 
 
-def _entry_iv_curvature_series(trades: List[ow.Trade]) -> pd.Series:
-    by_date = _trades_by_entry(trades)
-    curvature: Dict[pd.Timestamp, float] = {}
-    for ts, tlist in by_date.items():
-        short_meta = [
-            _entry_iv_delta_strike(t)
-            for t in tlist
-            if t.entry_data.position_type == ow.PositionType.SHORT
-        ]
-        short_meta = [m for m in short_meta if m is not None and m[3] is not None]
-        if not short_meta:
-            continue
-        short_iv = float(np.mean([m[0] for m in short_meta]))
-        short_mny_vals = [m[3] for m in short_meta if m[3] is not None]
-        if not short_mny_vals:
-            continue
-        short_mny = float(np.mean(short_mny_vals))
-
-        long_meta = [
-            _entry_iv_delta_strike(t)
-            for t in tlist
-            if t.entry_data.position_type == ow.PositionType.LONG
-        ]
-        long_meta = [m for m in long_meta if m is not None and m[3] is not None]
-        if len(long_meta) < 2:
-            continue
-        far, near = _pick_near_far_long(long_meta)
-        if not far or not near:
-            continue
-        if far[3] is None or near[3] is None:
-            continue
-
-        # order points by moneyness and compute curvature at the middle point
-        points = sorted(
-            [(far[3], far[0]), (near[3], near[0]), (short_mny, short_iv)],
-            key=lambda p: p[0],
-        )
-        p0, p1, p2 = points
-        sec = _three_point_second_derivative(p0, p1, p2)
-        if sec is not None:
-            curvature[ts] = float(sec)
-
-    return pd.Series(curvature, dtype=float).sort_index()
-
-
-def plot_iv_curvature(
-    trades: List[ow.Trade], out_path: Path = IV_CURVATURE_PLOT_PATH
+def export_equity_csv(
+    result: ow.BackTestResult, out_path: Path
 ) -> Path | None:
-    curvature = _entry_iv_curvature_series(trades)
-    if curvature.empty:
+    frame = equity_underlying_frame(result)
+    if frame.empty:
         return None
-
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(1, 1, figsize=(10, 3.6))
-    ax.axhline(0.0, color="0.3", linestyle="--", linewidth=1.0, alpha=0.7)
-    ax.plot(
-        curvature.index,
-        curvature,
-        color=PALETTE["curvature"],
-        linewidth=1.6,
-        label="IV curvature (entry)",
-    )
-    ax.scatter(curvature.index, curvature, color=PALETTE["curvature"], s=12)
-    ax.set_ylabel("Second derivative (IV vs moneyness)")
-    ax.set_xlabel("Date")
-    ax.legend(frameon=False)
-    ax.grid(alpha=0.3)
-
-    fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
+    frame.to_csv(out_path)
     return out_path
 
 
 def plot_entry_iv_and_skew(
-    trades: List[ow.Trade], out_path: Path = IV_SKEW_PLOT_PATH
+    trades: List[ow.Trade], out_path: Path
 ) -> Path | None:
     short_iv = _short_entry_iv_series(trades)
     far_skew, near_skew = _entry_skew_series(trades)
@@ -518,7 +542,38 @@ def plot_entry_iv_and_skew(
     return out_path
 
 
-def plot_ladder(result: ow.BackTestResult, out_path: Path = PLOT_PATH) -> Path | None:
+def _trade_durations(trades: List[ow.Trade]) -> List[int]:
+    durations: List[int] = []
+    for trade in trades or []:
+        entry = trade.entry_data.entry_date
+        exit_date = trade.entry_data.exit_date
+        if entry is None or exit_date is None:
+            continue
+        durations.append(int(exit_date - entry + 1))
+    return durations
+
+
+def plot_hold_duration_hist(
+    trades: List[ow.Trade], out_path: Path
+) -> Path | None:
+    durations = _trade_durations(trades)
+    if not durations:
+        return None
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.hist(durations, bins=12, color="#1f77b4", alpha=0.75)
+    ax.set_title("Trade Hold Duration", weight="bold")
+    ax.set_xlabel("Hold duration (days)")
+    ax.set_ylabel("Count")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def plot_strategy(result: ow.BackTestResult, out_path: Path, otm_ratio: int) -> Path | None:
     if not result.snapshots:
         return None
 
@@ -538,14 +593,15 @@ def plot_ladder(result: ow.BackTestResult, out_path: Path = PLOT_PATH) -> Path |
         if not underlying.empty
         else pd.Series(dtype=float)
     )
+    portfolio_delta = _portfolio_delta_series(result)
 
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, axes = plt.subplots(
-        3,
+        4,
         1,
-        figsize=(12, 6),
+        figsize=(12, 7),
         sharex=True,
-        gridspec_kw={"height_ratios": [2.0, 1.2, 1.0]},
+        gridspec_kw={"height_ratios": [2.0, 1.2, 1.0, 1.0]},
     )
 
     axes[0].plot(
@@ -557,10 +613,9 @@ def plot_ladder(result: ow.BackTestResult, out_path: Path = PLOT_PATH) -> Path |
     )
     axes[0].axhline(0.0, color="0.3", linestyle="--", linewidth=1.0, alpha=0.6)
     axes[0].set_ylabel("Equity (normalised, start=0)")
-    axes[0].set_title("Short Put Ladder | hold 120d | ttm 120-180d", weight="bold")
+    axes[0].set_title(f"1 Short / {otm_ratio} Longs | hold 120d | ttm 120-180d", weight="bold")
     axes[0].legend(frameon=False)
 
-    # Underlying vs strategy performance (normalised) + summed returns
     strategy_ret = equity_rel - 1.0
     if not underlying_norm.empty:
         axes[1].plot(
@@ -570,48 +625,38 @@ def plot_ladder(result: ow.BackTestResult, out_path: Path = PLOT_PATH) -> Path |
             linewidth=1.4,
             label="Underlying",
         )
-        underlying_ret = (underlying_norm - 1.0).reindex(
-            strategy_ret.index, method="ffill"
-        )
-    else:
-        underlying_ret = pd.Series(0.0, index=strategy_ret.index)
-    underlying_ret = underlying_ret.fillna(0.0)
-    combined_norm = 1.0 + strategy_ret.add(underlying_ret, fill_value=0.0)
-
-    axes[1].plot(
-        equity_rel.index,
-        equity_rel,
-        color=PALETTE["equity"],
-        linewidth=1.4,
-        linestyle="--",
-        label="Strategy",
-    )
-    axes[1].plot(
-        combined_norm.index,
-        combined_norm,
-        color=PALETTE["combined"],
-        linewidth=1.6,
-        linestyle="-.",
-        label="Combined (sum returns)",
-    )
-    axes[1].set_ylabel("Combined (normalised)")
+    axes[1].set_ylabel("Underlying (normalised)")
     axes[1].legend(frameon=False)
     axes[1].grid(alpha=0.25)
 
-    axes[2].fill_between(
+    if not portfolio_delta.empty:
+        axes[2].plot(
+            portfolio_delta.index,
+            portfolio_delta,
+            color=PALETTE["delta"],
+            linewidth=1.4,
+            label="Portfolio delta (avg per contract)",
+        )
+    axes[2].axhline(0.0, color="0.3", linestyle="--", linewidth=1.0, alpha=0.6)
+    axes[2].set_ylabel("Delta (avg per contract)")
+    axes[2].set_ylim(-1.05, 1.05)
+    axes[2].legend(frameon=False)
+    axes[2].grid(alpha=0.3)
+
+    axes[3].fill_between(
         drawdown.index, drawdown, color=PALETTE["drawdown"], alpha=0.25
     )
-    axes[2].plot(
+    axes[3].plot(
         drawdown.index,
         drawdown,
         color=PALETTE["drawdown"],
         linewidth=1.4,
         label="Drawdown",
     )
-    axes[2].set_ylabel("Drawdown (weekly)")
-    axes[2].set_xlabel("Date")
-    axes[2].set_ylim(bottom=0)
-    axes[2].grid(alpha=0.3)
+    axes[3].set_ylabel("Drawdown (weekly)")
+    axes[3].set_xlabel("Date")
+    axes[3].set_ylim(bottom=0)
+    axes[3].grid(alpha=0.3)
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -620,9 +665,21 @@ def plot_ladder(result: ow.BackTestResult, out_path: Path = PLOT_PATH) -> Path |
     return out_path
 
 
-def evaluate_short_put_ladder(load_existing: bool = False) -> Dict[str, float]:
-    result, trades = run_short_put_ladder(
-        return_trades=True, load_existing=load_existing
+def evaluate_structure(
+    short_delta: float, long_delta: float, otm_ratio: int, short_delta_lim: float
+) -> Dict[str, float] | tuple[Dict[str, float], Path | None]:
+    suffix = _suffix_from_params(short_delta, long_delta, otm_ratio)
+    csv_path = _csv_path_from_params(short_delta, long_delta, otm_ratio)
+    plot_path = _plot_path_from_params(short_delta, long_delta, otm_ratio)
+    iv_skew_path = _iv_skew_path_from_params(short_delta, long_delta, otm_ratio)
+    hold_hist_path = _hold_hist_path_from_params(short_delta, long_delta, otm_ratio)
+    result, trades = run_structure(
+        short_delta,
+        long_delta,
+        otm_ratio,
+        suffix,
+        short_delta_lim=short_delta_lim,
+        return_trades=True,
     )
     equity = _equity_series(result)
     weekly_drawdown = _drawdown_from_equity(_weekly_equity(equity))
@@ -633,34 +690,52 @@ def evaluate_short_put_ladder(load_existing: bool = False) -> Dict[str, float]:
             float(weekly_drawdown.max()) if not weekly_drawdown.empty else float("nan")
         ),
     }
-    plot_ladder(result, PLOT_PATH)
-    plot_entry_iv_and_skew(trades, IV_SKEW_PLOT_PATH)
-    plot_iv_curvature(trades, IV_CURVATURE_PLOT_PATH)
-    return metrics
+    plot_strategy(result, plot_path, otm_ratio)
+    plot_entry_iv_and_skew(trades, iv_skew_path)
+    plot_hold_duration_hist(trades, hold_hist_path)
+    csv_path = export_equity_csv(result, csv_path)
+    return metrics, csv_path
 
 
-def main(argv: List[str] | None = None) -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run or reload the short put ladder backtest."
+        description="Run a single short/long put structure on the index."
     )
-    parser.add_argument(
-        "--load_existing",
-        "--load-existing",
-        "--load_exisitng",
-        action="store_true",
-        dest="load_existing",
-        help="Skip rerun and load existing strategy pickle outputs instead.",
-    )
-    args = parser.parse_args(argv)
+    parser.add_argument("--short_delta", type=float, default=0.35)
+    parser.add_argument("--long_delta", type=float, default=0.20)
+    parser.add_argument("--otm_ratio", type=int, default=2)
+    parser.add_argument("--short_delta_lim", type=float, default=SHORT_DELTA_LIM)
+    return parser.parse_args()
 
-    metrics = evaluate_short_put_ladder(load_existing=args.load_existing)
+
+def main() -> None:
+    args = parse_args()
+    metrics, csv_path = evaluate_structure(
+        short_delta=args.short_delta,
+        long_delta=args.long_delta,
+        otm_ratio=args.otm_ratio,
+        short_delta_lim=args.short_delta_lim,
+    )
     print(
-        f"Short put ladder: annual_simple_return={metrics['annual_simple_return']:.4f} | "
+        f"Short/long: short_delta={args.short_delta:.3f} | long_delta={args.long_delta:.3f} | "
+        f"otm_ratio={args.otm_ratio} | short_delta_lim={args.short_delta_lim:.3f} | "
+        f"annual_simple_return={metrics['annual_simple_return']:.4f} | "
         f"sharpe={metrics['sharpe']:.3f} | max_drawdown={metrics['max_drawdown']:.4f}"
     )
-    print(f"Equity/drawdown plot written to {PLOT_PATH}")
-    print(f"Entry IV + skew plot written to {IV_SKEW_PLOT_PATH}")
-    print(f"Entry IV curvature plot written to {IV_CURVATURE_PLOT_PATH}")
+    print(
+        "Equity/drawdown plot written to "
+        f"{_plot_path_from_params(args.short_delta, args.long_delta, args.otm_ratio)}"
+    )
+    print(
+        "Entry IV + skew plot written to "
+        f"{_iv_skew_path_from_params(args.short_delta, args.long_delta, args.otm_ratio)}"
+    )
+    print(
+        "Hold-duration histogram written to "
+        f"{_hold_hist_path_from_params(args.short_delta, args.long_delta, args.otm_ratio)}"
+    )
+    if csv_path:
+        print(f"Equity series CSV written to {csv_path}")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from .position import (
     CappedDownsideTrade,
     SpreadFilteredTrade,
     ShortExposureLimTrade,
-    FuturesCarry
+    FuturesCarry,
 )
 
 __all__ = [

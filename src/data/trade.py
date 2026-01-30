@@ -31,10 +31,6 @@ class AccountingConvention(str, Enum):
     MTM = "mark_to_market"
 
 
-class SpreadFeatures(int, Enum):
-    LONG = 1
-    SHORT = -1
-
 class TransactionCostModel(str, Enum):
     NONE = "none"
     SPREAD = "spread"
@@ -64,7 +60,7 @@ class PriceSeries(Serializable):
 
     @classmethod
     def from_dict(cls, d: dict) -> "PriceSeries":
-        from .contract import Option, Spot, Future, OptionType
+        from .contract import Option, Spot, Future, IntraDayPerf, OptionType
 
         prices_raw = d.get("prices") or {}
         tick = d.get("tick", "")
@@ -148,6 +144,18 @@ class PriceSeries(Serializable):
                     open_interest=v.get("open_interest"),
                     
                 )
+            elif utag and ("intradayperf" in utag or "intraday_perf" in utag):
+                out[k] = IntraDayPerf(
+                    bid=v["bid"],
+                    ask=v["ask"],
+                    volume=v.get("volume", 0.0),
+                    date=(
+                        DateObj.from_iso(v["date"])
+                        if isinstance(v["date"], str)
+                        else v["date"]
+                    ),
+                    tick=v.get("tick", tick),
+                )
             else:
                 # fallback minimal Spot
                 out[k] = Spot(
@@ -179,6 +187,11 @@ class Cashflow(Serializable):
     accounting_convention: AccountingConvention
     parent_trade: "Trade" | None = None
 
+class CarryRankingFeature(str, Enum):
+    RAW_CARRY = "raw_carry"
+    SMOOTHED_CARRY = "smoothed_carry"
+    RAW_RELATIVE_CARRY = "raw_relative_carry"
+    SMOOTHED_RELATIVE_CARRY = "smoothed_relative_carry"
 
 @dataclass
 class BaseTradeFeatures(Serializable, ABC):
@@ -205,7 +218,10 @@ class BaseTradeFeatures(Serializable, ABC):
 @dataclass
 class SpreadFeatures(BaseTradeFeatures):
     other_contracts: Tuple[str]
-    carry_score: float
+    raw_carry: float
+    smoothed_carry: float
+    raw_relative_carry: float
+    smoothed_relative_carry: float
     notional_exposure: float
     volatility: float
 
@@ -341,7 +357,7 @@ class BackTestResult(Serializable):
 
 
 def _decode_underlying(u, tick):
-    from .contract import Spot, Future, BaseUnderlying
+    from .contract import Spot, Future, IntraDayPerf, BaseUnderlying
 
     if u is None:
         return None
@@ -361,6 +377,14 @@ def _decode_underlying(u, tick):
         )
     if "Future".lower() in utag:
         return Future(
+            bid=u["bid"],
+            ask=u["ask"],
+            volume=u.get("volume", 0.0),
+            date=date,
+            tick=u.get("tick", tick),
+        )
+    if "intradayperf" in utag or "intraday_perf" in utag:
+        return IntraDayPerf(
             bid=u["bid"],
             ask=u["ask"],
             volume=u.get("volume", 0.0),

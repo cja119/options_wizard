@@ -3,6 +3,7 @@ from .contract import (
     Option,
     Future,
     Spot,
+    IntraDayPerf,
     OptionType,
     BaseUnderlying,
     OptionsTradeSpec,
@@ -17,7 +18,8 @@ from .trade import (
     AccountingConvention,
     PriceSeries,
     BaseTradeFeatures,
-    SpreadFeatures
+    SpreadFeatures,
+    CarryRankingFeature
 )
 
 __all__ = [
@@ -25,6 +27,7 @@ __all__ = [
     "Option",
     "Future",
     "Spot",
+    "IntraDayPerf",
     "OptionType",
     "BaseUnderlying",
     "Equity",
@@ -38,4 +41,5 @@ __all__ = [
     "OptionsTradeSpec",
     "SpreadFeatures",
     "CarryTradeSpec",
+    "CarryRankingFeature",
 ]

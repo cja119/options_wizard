@@ -15,6 +15,7 @@ from numpy import fromiter as np_fromiter
 from numpy import sqrt as np_sqrt
 
 from data.trade import BackTestResult
+from . import diagnostics as bt_diag
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
@@ -24,7 +25,7 @@ class BackTestCoordinator:
 
     def __init__(
         self, position: PositionBase, dates: Deque[DateObj], debug=False
-    ) -> None:
+) -> None:
         self._position = position
         self._dates = dates
         self._snapshots = deque()
@@ -35,8 +36,11 @@ class BackTestCoordinator:
 
     # --- External Interface --- #
     def run(self) -> BackTestResult:
+        bt_diag.reset(clear_log=True)
         self._run_backtest()
-        return self._process_results()
+        result = self._process_results()
+        bt_diag.finalize()
+        return result
 
     def compress(self, result: BackTestResult) -> None:
 

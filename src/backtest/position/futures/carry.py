@@ -3,19 +3,26 @@ Docstring for backtest.position.futures.carry
 """
 
 from data.date import DateObj
+from data import CarryRankingFeature
 from ..base import PositionBase, Cashflow
 from backtest.trade import Trade
-from typing import Tuple, override, List
+from typing import Tuple, override, List, Dict
+from data.trade import PositionType
+import heapq
 
 VOLATILITY_TARGET = 0.2
 VOLATILITY_FLOOR = 0.02
 MAX_NOTIONAL_FRAC = 1.0
+NUMBER_OF_SPREADS = 3
 
 class FuturesCarry(PositionBase):
     def __init__(self, config) -> None:
         super().__init__(config)
         self._live_spreads = set()
         self._live_vol = 0.0
+        self.n_shorts = 0
+        self.n_longs = 0
+        self._short_long_map = {}
 
     def _spread_vol(self, trade: Trade) -> float:
         vol_floor = self._kwargs.get("vol_floor", VOLATILITY_FLOOR)
@@ -38,6 +45,72 @@ class FuturesCarry(PositionBase):
             return 0.0
         return (spread_vol * notional * size) / equity
 
+    def _get_carry_score(self, trade: Trade) -> float:
+        carry_ranking = self._kwargs.get("carry_ranking", CarryRankingFeature.SMOOTHED_CARRY)
+        if trade.features is None:
+            return 0.0
+        if carry_ranking == CarryRankingFeature.RAW_CARRY:
+            return getattr(trade.features, "raw_carry", 0.0)
+        elif carry_ranking == CarryRankingFeature.SMOOTHED_CARRY:
+            return getattr(trade.features, "smoothed_carry", 0.0)
+        elif carry_ranking == CarryRankingFeature.RAW_RELATIVE_CARRY:
+            return getattr(trade.features, "raw_relative_carry", 0.0)
+        elif carry_ranking == CarryRankingFeature.SMOOTHED_RELATIVE_CARRY:
+            return getattr(trade.features, "smoothed_relative_carry", 0.0)
+        return 0.0
+    
+    def _invert_pos(self, trades: List[Trade]) -> None:
+        for trade in trades:
+            trade.entry_data.position_type = (
+                PositionType.LONG
+                if trade.entry_data.position_type == PositionType.SHORT
+                else PositionType.SHORT
+            )
+
+    def _enterable(
+        self, entering_trades: Dict[Tuple[str, ...], List[Trade]]
+    ) -> Tuple[Dict[Tuple[str, ...], List[Trade]], Dict[Tuple[str, ...], PositionType]]:
+        """
+        This function filters trades into enterable spreads only. This
+        ensures that we meet the targer exposoure of n shorts and n longs.
+        """
+        num_spreads = self._kwargs.get("number_of_spreads", NUMBER_OF_SPREADS)
+        if self.n_shorts >= num_spreads and self.n_longs >= num_spreads:
+            return {}, {}
+        
+        enterable = {}
+        spread_dirs = {}
+        spreads = []
+        for spread, trade_list in entering_trades.items():
+
+            carry_score = self._get_carry_score(trade_list[0])
+            
+            heapq.heappush(spreads, (carry_score, spread))
+                
+        n_shorts = num_spreads - self.n_shorts
+        n_longs = num_spreads - self.n_longs
+
+        # Lowest carry -> backwardation bucket (front long), highest carry -> contango bucket (front short).
+        best_longs = heapq.nsmallest(n_longs, spreads)
+        best_shorts = heapq.nlargest(n_shorts, spreads)
+
+        for _, spread in best_shorts:
+            trades = entering_trades[spread]
+            if trades[0].entry_data.position_type != PositionType.SHORT:
+                self._invert_pos(trades)
+            
+            enterable[spread] = trades
+            spread_dirs[spread] = PositionType.SHORT
+        for _, spread in best_longs:
+            trades = entering_trades[spread]
+            if trades[0].entry_data.position_type != PositionType.LONG:
+                self._invert_pos(trades)
+
+            enterable[spread] = trades
+            spread_dirs[spread] = PositionType.LONG
+
+        return enterable, spread_dirs
+    
     @override
     def size_function(self, entering_trades):
         
@@ -51,6 +124,7 @@ class FuturesCarry(PositionBase):
         # Iterating through entering trades and group by spread
         for trade in entering_trades:
             spread_key = trade.features.other_contracts
+
             # Skip if we are already live on this spread
             if spread_key in self._live_spreads:
                 continue
@@ -63,6 +137,11 @@ class FuturesCarry(PositionBase):
             entering_spreads[spread_key].append(trade)
 
         # If not entering spreads, return zero sizes
+        if not entering_spreads:
+            return {trade: 0.0 for trade in entering_trades}
+        
+        entering_spreads, spread_dirs = self._enterable(entering_spreads)
+
         if not entering_spreads:
             return {trade: 0.0 for trade in entering_trades}
         
@@ -82,7 +161,7 @@ class FuturesCarry(PositionBase):
 
         # Now size each spread based on its notional and vol, each entering trade gets
         # the same share of volatility budget.
-        for trades in entering_spreads.values():
+        for spread_key, trades in entering_spreads.items():
             
             # Sizing based on volatility target share
             spread_vol = self._spread_vol(trades[0])
@@ -111,6 +190,15 @@ class FuturesCarry(PositionBase):
             entering_vol += self._portfolio_vol(trade, sizes.get(trade, 0.0), te)
             if sizes.get(trade, 0.0) != 0.0:
                 self._live_spreads.add(spread_key)
+                # Only count spreads that actually open so zero-size entries don't consume slots.
+                if spread_key not in self._short_long_map:
+                    spread_dir = spread_dirs.get(spread_key)
+                    if spread_dir == PositionType.SHORT:
+                        self._short_long_map[spread_key] = spread_dir
+                        self.n_shorts += 1
+                    elif spread_dir == PositionType.LONG:
+                        self._short_long_map[spread_key] = spread_dir
+                        self.n_longs += 1
         self._live_vol += entering_vol
         return sizes
 
@@ -140,7 +228,12 @@ class FuturesCarry(PositionBase):
         for trade in scheduled_exits:
             if trade.features.other_contracts in self._live_spreads:
                 self._live_spreads.remove(trade.features.other_contracts)
-
+                if trade.features.other_contracts in self._short_long_map:
+                    if self._short_long_map[trade.features.other_contracts] == PositionType.SHORT:
+                        self.n_shorts -= 1
+                    else:
+                        self.n_longs -= 1
+                    del self._short_long_map[trade.features.other_contracts]
             if trade not in trades_to_close:
                 _, cashflow = trade.close(current_date)
                 exit_cashflows.append(cashflow)
@@ -148,4 +241,5 @@ class FuturesCarry(PositionBase):
 
         if trades_to_close:
             self._live_vol -= self._exiting_vol(list(trades_to_close))
+
         return trades_to_close, exit_cashflows

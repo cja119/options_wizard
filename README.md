@@ -6,3 +6,4 @@ This package provides the functionality to backtest and evaluate trade strategys
 - Intraday evaluation
 - Case studies (using yf data?)
 - Docs
+- Make universe a customizable base such that users can define their own instances for specific applications.

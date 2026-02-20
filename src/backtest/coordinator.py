@@ -4,34 +4,42 @@ Backtest Coordinator Module
 
 from __future__ import annotations
 
-from typing import Deque, TYPE_CHECKING
+from typing import Deque, Dict, TYPE_CHECKING
 from collections import deque
-from .position.base import PositionBase
-from universe import Universe
+from dataclasses import dataclass, field
+from abc import ABC
+import logging
 
-from tqdm import tqdm
+
 from numpy import log as np_log
 from numpy import fromiter as np_fromiter
 from numpy import sqrt as np_sqrt
 
 from data.trade import BackTestResult
+from position.base import PositionBase
 from . import diagnostics as bt_diag
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
 
+@dataclass
+class BackTestConfig(ABC):
+    starting_cash: float
+    start_date: DateObj
+    end_date: DateObj | None = None
+    kwargs: Dict = field(default_factory=dict)
+
 
 class BackTestCoordinator:
 
     def __init__(
-        self, position: PositionBase, dates: Deque[DateObj], debug=False
-) -> None:
+        self, position: PositionBase, dates: Deque[DateObj]
+    ) -> None:
         self._position = position
         self._dates = dates
         self._snapshots = deque()
         self._returns = deque()
         self._max_drawdown = 0.0
-        self._debug = debug
         pass
 
     # --- External Interface --- #
@@ -54,8 +62,16 @@ class BackTestCoordinator:
         current_equity = self._position.starting_cash
         max_drawdown = 0.0
 
-        for date in tqdm(self._dates):
+        for date in self._dates:
             snapshot = self._position(date)
+
+            logging.debug(
+                f"Backtest snapshot on {date.to_iso()}: "
+                f"equity={snapshot.total_equity:.2f}, "
+                f"cash={snapshot.total_cash:.2f}",
+                extra={"tick_name": "BACKTEST"}
+            )
+
             position = snapshot.total_equity + snapshot.total_cash
             self._snapshots.append(snapshot)
 
@@ -70,6 +86,7 @@ class BackTestCoordinator:
             current_equity = position
         self._max_drawdown = max_drawdown
         pass
+
 
     def _process_results(self) -> BackTestResult:
 
@@ -86,8 +103,7 @@ class BackTestCoordinator:
         ) - 1
         dates = [self._snapshots[i].date for i in range(len(self._snapshots))]
 
-        if self._debug:
-            self._clean_snapshots()
+        self._clean_snapshots()
 
         return BackTestResult(
             snapshots=list(self._snapshots),

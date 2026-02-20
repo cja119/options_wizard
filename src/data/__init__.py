@@ -6,8 +6,6 @@ from .contract import (
     IntraDayPerf,
     OptionType,
     BaseUnderlying,
-    OptionsTradeSpec,
-    CarryTradeSpec,
 )
 from .trade import (
     Equity,
@@ -19,7 +17,8 @@ from .trade import (
     PriceSeries,
     BaseTradeFeatures,
     SpreadFeatures,
-    CarryRankingFeature
+    CarryRankingFeature,
+    BackTestResult
 )
 
 __all__ = [
@@ -38,8 +37,5 @@ __all__ = [
     "AccountingConvention",
     "PriceSeries",
     "BaseTradeFeatures",
-    "OptionsTradeSpec",
-    "SpreadFeatures",
-    "CarryTradeSpec",
-    "CarryRankingFeature",
+    "BackTestResult"
 ]

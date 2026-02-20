@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import os
+import logging
 from dotenv import load_dotenv
 
 from dataclasses import dataclass
@@ -90,8 +91,7 @@ class Universe:
 
         for stock in self.ticks.copy():
             if stock not in available_ticks:
-                print(
-                    f"\r Removing {stock} from universe - data not available",
-                    end=" " * 10,
+                logging.warning(
+                    f"Removing {stock} from universe - data not available"
                 )
                 self.ticks.remove(stock)

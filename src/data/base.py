@@ -6,6 +6,8 @@ import pickle
 from dataclasses import fields, is_dataclass
 from typing import get_origin, get_args, Union, get_type_hints, Dict
 from functools import lru_cache
+import pprint
+import logging
 
 PRIMITIVES = (int, float, str, bool, type(None))
 
@@ -108,3 +110,62 @@ class Serializable:
             return pickle.loads(value)
         except Exception:
             return value
+
+    def to_log_dict(self):
+        """
+        Like to_dict(), but ensures dict KEYS are also encoded (and stringified if needed),
+        so logs are always readable and don't rely on nested __repr__.
+        """
+        return self._log_encode(self)
+
+    def to_log_str(self, *, width: int = 120, sort_dicts: bool = True) -> str:
+        return pprint.pformat(self.to_log_dict(), width=width, sort_dicts=sort_dicts)
+
+    def log_debug(self, *, tick_name: str = "-", prefix: str | None = None, logger=None) -> None:
+        logger = logger or logging.getLogger(type(self).__module__)
+        body = self.to_log_str()
+        if prefix:
+            logger.debug("%s\n%s", prefix, body, extra={"tick_name": tick_name})
+        else:
+            logger.debug("%s", body, extra={"tick_name": tick_name})
+
+    @staticmethod
+    def _log_encode(value):
+        """
+        Log-safe encoder:
+        - expands nested Serializables/dataclasses to dicts
+        - encodes list/tuple/set recursively
+        - encodes dict keys too (stringifies non-primitive keys)
+        - shows pickled bytes as a short tag instead of raw bytes spam
+        """
+        # primitives
+        if isinstance(value, PRIMITIVES):
+            return value
+
+        # bytes (your pickle fallback output) -> don't dump raw bytes into logs
+        if isinstance(value, (bytes, bytearray)):
+            return f"<pickled:{len(value)} bytes>"
+
+        # nested dataclass / Serializable
+        if is_dataclass(value):
+            # use your normal serialization path
+            d = value.to_dict() if hasattr(value, "to_dict") else {f.name: getattr(value, f.name) for f in fields(value)}
+            return Serializable._log_encode(d)
+
+        # list-like
+        if isinstance(value, (list, tuple, set)):
+            return [Serializable._log_encode(v) for v in value]
+
+        # dict: encode keys AND values
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                kk = Serializable._log_encode(k)
+                # keys must be hashable; if we turned it into a dict/list, stringify it
+                if not isinstance(kk, (str, int, float, bool, type(None))):
+                    kk = pprint.pformat(kk, width=80, sort_dicts=True)
+                out[kk] = Serializable._log_encode(v)
+            return out
+
+        # fallback: for unknown objects, show something readable
+        return str(value)

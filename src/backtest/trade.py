@@ -5,6 +5,7 @@ Trade class definitions
 from __future__ import annotations
 
 from typing import Tuple, TYPE_CHECKING
+import logging
 
 from data.trade import (
     TransactionCostModel,
@@ -15,13 +16,12 @@ from data.trade import (
 )
 
 from data.date import DateObj
-from . import diagnostics as bt_diag
 
 SPREAD_CAPTURE = 1.0
 
 if TYPE_CHECKING:
-    from ..data.date import DateObj
-    from ..data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
+    from data.date import DateObj
+    from data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
 
 
 class Trade:
@@ -45,6 +45,7 @@ class Trade:
         price: BaseUnderlying = self.entry_data.price_series.prices[
             self.entry_data.entry_date.to_iso()
         ]
+
         return self._cash_position(price)
 
     def __call__(
@@ -63,7 +64,7 @@ class Trade:
         cashflow = None
 
         if self._open_condition(date):
-            cashflow: Cashflow = self._initialize_trade()
+            cashflow: Cashflow = self._initialize_trade(date)
         elif self._close_condition(date):
             cashflow: Cashflow = self._close_trade()
             equity: Equity | None = None
@@ -92,17 +93,19 @@ class Trade:
         date = self._nearest_date_above(date)
         self.entry_data.exit_date = date
         if (not self._opened) and date == self.entry_data.entry_date:
-            entry_cashflow = self._initialize_trade()
+            
+            entry_cashflow = self._initialize_trade(date)
             exit_cashflow = self._close_trade()
-            warn_msg = (
-                "WARNING same-day exit before open | "
-                f"tick={self.entry_data.tick} | "
+            
+            logging.warning(
+                "Entering trade exiting on same-day "
                 f"entry={self.entry_data.entry_date.to_iso()} | "
                 f"exit={date.to_iso()} | "
                 f"pos={self.entry_data.position_type.name} | "
-                f"size={self.entry_data.position_size}"
+                f"size={self.entry_data.position_size}",
+                extra={"tick_name": self._tick}
             )
-            bt_diag.log_same_day_exit(warn_msg)
+
             net_amount = 0.0
             if entry_cashflow is not None:
                 net_amount += entry_cashflow.amount
@@ -238,7 +241,7 @@ class Trade:
         ps: float = self.entry_data.position_size
         return self._mid_price(price) * self._pos_sign * ps
 
-    def _initialize_trade(self) -> Cashflow:
+    def _initialize_trade(self, date: 'DateObj') -> Cashflow:
 
         price: BaseUnderlying = self.entry_data.price_series.prices[
             self.entry_data.entry_date.to_iso()
@@ -260,6 +263,11 @@ class Trade:
 
         self._opened = True
         self._closed = False
+
+        logging.debug(
+            f"Entering trade on {date.to_iso()}",
+            extra={"tick_name": self._tick}
+        )
 
         return cashflow
 

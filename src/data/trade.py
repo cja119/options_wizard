@@ -8,6 +8,7 @@ from abc import ABC
 from dataclasses import dataclass, field, fields, MISSING
 from typing import List, Dict, TYPE_CHECKING, Any, Tuple, Type
 from enum import Enum
+import logging
 import pickle
 
 import numpy as np
@@ -57,6 +58,8 @@ class PriceSeries(Serializable):
             self.prices = {}
 
         self.prices = {k: v for k, v in self.prices.items() if v is not None}
+
+        self.log_debug(tick_name=self.tick,  prefix="Price series debug: ")
 
     @classmethod
     def from_dict(cls, d: dict) -> "PriceSeries":
@@ -179,6 +182,9 @@ class Equity(Serializable):
     accounting_convention: AccountingConvention
     parent_trade: "Trade" | None = None
 
+    def __post_init__(self):
+        self.log_debug(tick_name=self.parent_trade._tick,  prefix="Equity debug: ")
+
 
 @dataclass
 class Cashflow(Serializable):
@@ -186,6 +192,9 @@ class Cashflow(Serializable):
     amount: float
     accounting_convention: AccountingConvention
     parent_trade: "Trade" | None = None
+
+    def __post_init__(self):
+        self.log_debug(tick_name=self.parent_trade._tick,  prefix="Cashflow debug: ")
 
 class CarryRankingFeature(str, Enum):
     RAW_CARRY = "raw_carry"
@@ -195,6 +204,10 @@ class CarryRankingFeature(str, Enum):
 
 @dataclass
 class BaseTradeFeatures(Serializable, ABC):
+
+    def __post_init__(self):
+        self.log_debug(tick_name='',  prefix="Cashflow debug: ")
+
     @classmethod
     def from_dict(cls, d: dict) -> "BaseTradeFeatures":
         if cls is BaseTradeFeatures:
@@ -343,7 +356,8 @@ class Snapshot(Serializable):
     total_equity: float
     total_cash: float
     trade_equities: Dict[Trade, Equity]
-
+    
+    
 @dataclass
 class BackTestResult(Serializable):
     snapshots: List[Snapshot]
@@ -354,7 +368,19 @@ class BackTestResult(Serializable):
     total_return: float
     cagr: float
     dates: List[DateObj]
-
+    
+    def __post_init__(self):
+        logging.info(
+            f"Backtest completed: "
+            f"Sharpe={self.sharpe:.3f}, "
+            f"CAGR={self.cagr*100:.2f}%, "
+            f"Total Return={self.total_return*100:.2f}%, "
+            f"Max DD={self.max_drawdown*100:.2f}%, "
+            f"Volatility={self.volatility*100:.2f}%, "
+            f"Trades={len(self.snapshots)}",
+            extra={"tick_name": "BACKTEST"}
+        )
+    
 
 def _decode_underlying(u, tick):
     from .contract import Spot, Future, IntraDayPerf, BaseUnderlying

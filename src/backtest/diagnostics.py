@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from threading import Lock
 
@@ -58,5 +59,5 @@ def finalize() -> int:
     with _LOCK:
         _flush_locked()
         count = _WARNING_COUNT
-    print(f"{count} warnings loaded into the log file")
+    logging.info(f"{count} warnings loaded into the log file")
     return count

@@ -11,38 +11,6 @@ from .base import Serializable
 from .date import DateObj
 
 
-@dataclass
-class OptionsTradeSpec:
-    call_put: OptionType
-    lm_fn: Callable = field(default=lambda x: True)
-    ttm: Callable = field(default=lambda x: True)
-    abs_delta: Callable = field(default=lambda x: True)
-    entry_cond: Callable | List[Callable] = field(default=lambda x: True)
-    entry_col: Optional[str] | List[Optional[str]] = field(default=None)
-    exit_cond: Callable | List[Callable] = field(default=lambda x: False)
-    exit_col: Optional[str] | List[Optional[str]] = field(default=None)
-    volume_min: int = 0
-    open_interest_min: int = 0
-    entry_min: str = "perc_spread"
-    max_hold_period: int = 30
-    position: float = 1.0
-
-
-@dataclass
-class CarryTradeSpec:
-    tenor_targets: List[int]    
-    exposure_targets: List[float]
-    roll_target: int
-    metric: str  # "FRONT_CARRY" or "SPREAD_CARRY"
-    spread_override_bps: Optional[float] = field(default=None)
-
-    def __post_init__(self):
-        if len(self.tenor_targets) != len(self.exposure_targets):
-            raise ValueError("Tenor targets and exposure targets must be the same length")
-        if abs(sum(self.exposure_targets)) > 1e-6:
-            raise ValueError("Exposure targets must sum to zero")
-        if self.metric not in ["smoothed_relative_carry", "raw_relative_carry", "raw_carry", "smoothed_carry"]:
-            raise ValueError("Metric must be either 'raw_carry', 'smoothed_relative_carry', 'raw_relative_carry', or 'smoothed_carry'")
 
 
 @dataclass

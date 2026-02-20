@@ -10,3 +10,8 @@
 **/.parquet
 tips.md
 **/*cache**
+**/notebooks/*
+**/examples
+**/position/*
+!**/position/base.py
+!**/position/__init__.py

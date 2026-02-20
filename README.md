@@ -7,3 +7,4 @@ This package provides the functionality to backtest and evaluate trade strategys
 - Case studies (using yf data?)
 - Docs
 - Make universe a customizable base such that users can define their own instances for specific applications.
+- Add greek calculations to options definitions so can be used for sizing (thinking notional exposure targeting)

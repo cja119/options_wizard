@@ -10,5 +10,5 @@ This package provides the functionality to backtest and evaluate trade strategys
 - Make universe a customizable base such that users can define their own instances for specific applications.
 - Add greek calculations to options definitions so can be used for sizing (thinking notional exposure targeting)
 
-### Disclaimer
+## Disclaimer
 This software is provided as is and shouldn't be used as the basis of any investment decisions and is not providing financial advice. I am not liable for any losses incurred through the use of this product.

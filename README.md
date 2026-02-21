@@ -2,7 +2,7 @@
 
 This package provides the functionality to backtest and evaluate trade strategys in Python. This was originally built for options chains, so prioritises efficient computation through the evaluation of strategies serially (using polars).
 
-## How it Works 🚀:
+## How it Works 🚀
 
 1. Data processing is defined via a generalised function pipeline, which can iterate through different securities. This builds data objects that contain all necessary information to evaluate a trade for that security (typically a time indexed set of security objects).
 

@@ -1,14 +1,25 @@
-# Options-Wizard 
+# Options-Wizard 🧙
 
-This package provides the functionality to backtest and evaluate trade strategys in Python. This was originally built for options chains, so prioritises efficient computation through the evaluation of strategies serially (using polars); NAV tracking is kept accurate through in the cross section (ie time-stepping throughout the whole universe). This is designed to integrate into existing databases and is compatible with SQL. Have a look at the examples, or read through the docs to find out more. 
+This package provides the functionality to backtest and evaluate trade strategys in Python. This was originally built for options chains, so prioritises efficient computation through the evaluation of strategies serially (using polars).
 
-## To do
+## How it Works 🚀:
+
+1. Data processing is defined via a generalised function pipeline, which can iterate through different securities. This builds data objects that contain all necessary information to evaluate a trade for that security (typically a time indexed set of security objects).
+
+2. During the backtest, these cached security objects are loaded and processed by a generalisable position sizing and risk management class.
+
+3. Cash, position and margin tracking is performed accross all dates, cross exchange for as many securities and strategies that are loaded. This allows portfolio level backtsests to be performed alongside strategy level.
+
+NAV tracking is kept accurate through in the cross section (ie time-stepping throughout the whole universe). This is designed to integrate into existing databases and is compatible with SQL. Have a look at the examples, or read through the docs to find out more. 
+
+## To do 🔎
 - Intraday evaluation
 - Case studies (using yf data?)
 - Docs
 - Build some out the box regression models for use too.
 - Make universe a customizable base such that users can define their own instances for specific applications.
 - Add greek calculations to options definitions so can be used for sizing (thinking notional exposure targeting)
+- Come up with a better package name(?)
 
 ## Disclaimer
 This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this product.

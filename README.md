@@ -1,6 +1,6 @@
 # Options-Wizard 🧙
 
-This package provides the functionality to backtest and evaluate trade strategys in Python. This was originally built for options chains, so prioritises efficient computation through the evaluation of strategies serially (using polars).
+This package provides the functionality to backtest and evaluate trade strategys in Python. This was originally built for options chains, so prioritises efficient computation through the evaluation of strategies serially (using polars). Read the about.md file in the docs to learn more!
 
 <p align="center">
   <img src="png/icon.png" alt="Wizard Icon" width="400"/>

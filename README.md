@@ -21,5 +21,5 @@ The benefit of this approach is it separates trade identification and building f
 - Add greek calculations to options definitions so can be used for sizing (thinking notional exposure targeting)
 - Come up with a better package name(?)
 
-## Disclaimer
+## Disclaimer ⚠️
 This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this product.

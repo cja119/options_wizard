@@ -25,6 +25,7 @@ The benefit of this approach is it separates trade identification and building f
 - Make universe a customizable base such that users can define their own instances for specific applications.
 - Add greek calculations to options definitions so can be used for sizing (thinking notional exposure targeting)
 - Come up with a better package name(?)
+- Cross sectional model fitting (may be hard (?))
 
 ## Disclaimer ⚠️
 This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this product.

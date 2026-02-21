@@ -10,7 +10,7 @@ This package provides the functionality to backtest and evaluate trade strategys
 
 3. Cash, position and margin tracking is performed accross all dates, cross exchange for as many securities and strategies that are loaded. This allows portfolio level backtsests to be performed alongside strategy level.
 
-NAV tracking is kept accurate through in the cross section (ie time-stepping throughout the whole universe). This is designed to integrate into existing databases and is compatible with SQL. Have a look at the examples, or read through the docs to find out more. 
+The benefit of this approach is it separates trade identification and building from backtesting, this makes it much quicker to develop and implement new strategies. Crucially, backtesting is done cross sectionally which gives much better NAV, cash  and margin tracking.
 
 ## To do 🔎
 - Intraday evaluation

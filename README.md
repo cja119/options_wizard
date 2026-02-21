@@ -6,7 +6,8 @@ This package provides the functionality to backtest and evaluate trade strategys
   <img src="png/icon.png" alt="Wizard Icon" width="400"/>
 </p>
 
-## Disclaimer ⚠️
+
+## Disclaimer 
 This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this product.
 
 <p align="center">
@@ -15,3 +16,7 @@ This software is provided as is and shouldn't be used as the basis of any invest
   <a href="https://opensource.org/licenses/MIT">
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
 </p>
+
+
+
+

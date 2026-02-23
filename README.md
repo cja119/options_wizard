@@ -8,7 +8,7 @@ This package provides the functionality to backtest and evaluate trade strategys
 
 
 ## Disclaimer 
-This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this product.
+This software is provided as is and shouldn't be used as the basis of any investment decisions and does not offer any investment or financial advice. I am not liable for any losses incurred through the use of this repository.
 
 <p align="center">
   <a href="https://www.python.org/" target="_blank" rel="noopener noreferrer">

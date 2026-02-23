@@ -10,5 +10,5 @@
 
 ## Feature Ideas?
 - Come up with a better package name(?)
-- Cross sectional model fitting (may be hard (?))
+- Cross sectional model fitting (may be hard (?)) <- Global pause and reparametrisation based on trade result objects(?)
 

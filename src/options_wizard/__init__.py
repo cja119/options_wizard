@@ -51,27 +51,30 @@ def set_log(level: str, log_file: str | None = None) -> None:
 
     shared_processors = [
         structlog.contextvars.merge_contextvars,
-        structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
     ]
 
-    renderer = structlog.processors.KeyValueRenderer(
-        key_order=["timestamp", "level", "logger", "event", "tick"],
-        drop_missing=True,
+    console_formatter = ProcessorFormatter(
+        processors=[
+            ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(colors=True),
+        ],
+        foreign_pre_chain=shared_processors,
     )
-
-    formatter = ProcessorFormatter(
-        processor=renderer,
+    file_formatter = ProcessorFormatter(
+        processors=[
+            ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
         foreign_pre_chain=shared_processors,
     )
 
-    handlers: list[logging.Handler] = [
-        logging.FileHandler(log_path, mode="w", encoding="utf-8"),
-        logging.StreamHandler(),
-    ]
-    for handler in handlers:
-        handler.setFormatter(formatter)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_formatter)
+    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_handler.setFormatter(file_formatter)
+    handlers: list[logging.Handler] = [file_handler, console_handler]
 
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
@@ -98,11 +101,11 @@ def set_log(level: str, log_file: str | None = None) -> None:
 
     structlog.configure(
         processors=[
+            structlog.stdlib.filter_by_level,
             *shared_processors,
             structlog.stdlib.PositionalArgumentsFormatter(),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
             ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -114,7 +117,13 @@ __all__ = sorted(
     name
     for name, val in globals().items()
     if not name.startswith("_")
-    and name not in {"types", "logging", "Path", "structlog", "ProcessorFormatter"}
+    and name
+    not in {
+        "types",
+        "logging",
+        "Path",
+        "structlog",
+        "ProcessorFormatter",
+    }
     and not isinstance(val, types.ModuleType)
 )
-

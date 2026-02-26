@@ -75,7 +75,7 @@ __all__ = sorted(
     name
     for name, val in globals().items()
     if not name.startswith("_")
-    and name not in {"types", "logging"}
+    and name not in {"types", "logging", "Path"}
     and not isinstance(val, types.ModuleType)
 )
 

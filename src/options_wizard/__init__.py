@@ -9,12 +9,6 @@ import types
 import logging
 from pathlib import Path
 
-class DefaultTickNameFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        if not hasattr(record, "tick_name"):
-            record.tick_name = "-"   # default
-        return True
-
 def caller_stem(stacklevel: int = 2) -> str:
     import inspect
     from pathlib import Path
@@ -53,8 +47,7 @@ def set_log(level: str, log_file: str | None = None) -> None:
     log_path = Path.cwd() / "tmp" / log_file
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter("[%(asctime)s | %(levelname)s | %(tick_name)s]: %(message)s")
-    filter = DefaultTickNameFilter()
+    formatter = logging.Formatter("[%(asctime)s | %(levelname)s]: %(message)s")
 
     handlers = [
         logging.FileHandler(log_path, mode="w", encoding="utf-8"),
@@ -71,16 +64,12 @@ def set_log(level: str, log_file: str | None = None) -> None:
     root_logger.setLevel(numeric_level)
     for handler in root_logger.handlers:
         handler.setFormatter(formatter)
-    if not any(isinstance(f, DefaultTickNameFilter) for f in root_logger.filters):
-        root_logger.addFilter(filter)
 
-    # Apply formatter and filter to all loggers (including libraries)
+    # Apply formatter to all existing loggers (including libraries)
     for name in logging.root.manager.loggerDict:
         logger = logging.getLogger(name)
         for handler in logger.handlers:
             handler.setFormatter(formatter)
-        if not any(isinstance(f, DefaultTickNameFilter) for f in logger.filters):
-            logger.addFilter(filter)
             
 __all__ = sorted(
     name

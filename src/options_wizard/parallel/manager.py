@@ -96,11 +96,10 @@ class SingleTickProcessor:
                 self._execute_function(func, kwargs)
             except Exception as e:
                 logging.error(
-                    "Exception in %s for tick %s: %s",
-                    func.__name__,
+                    "[%s] Exception in %s: %s",
                     self._tick,
+                    func.__name__,
                     e,
-                    extra={"tick_name": self._tick},
                 )
                 self._exit()
 
@@ -258,7 +257,7 @@ class Pipeline:
     def _run_pipeline(self) -> None:
         failed = 0
         for tick in self.universe.ticks:
-            logging.info(f"Running strategy construction.", extra={"tick_name": tick})
+            logging.info("[%s] Running strategy construction.", tick)
             result = self._run_single(tick)
             self._rets[tick] = result
 
@@ -266,7 +265,7 @@ class Pipeline:
             if result is None:
                 failed += 1
             elif isinstance(result, tuple) and all(r is None for r in result):
-                logging.warning(f"Strategy backtest failed", extra={"tick_name": tick})
+                logging.warning("[%s] Strategy backtest failed", tick)
                 failed += 1
 
     def _run_single(

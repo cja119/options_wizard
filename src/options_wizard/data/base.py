@@ -121,13 +121,20 @@ class Serializable:
     def to_log_str(self, *, width: int = 120, sort_dicts: bool = True) -> str:
         return pprint.pformat(self.to_log_dict(), width=width, sort_dicts=sort_dicts)
 
-    def log_debug(self, *, tick_name: str = "-", prefix: str | None = None, logger=None) -> None:
+    def log_debug(
+        self,
+        *,
+        tick: str | None = None,
+        prefix: str | None = None,
+        logger=None,
+    ) -> None:
         logger = logger or logging.getLogger(type(self).__module__)
         body = self.to_log_str()
+        tick_prefix = f"[{tick}] " if tick else ""
         if prefix:
-            logger.debug("%s\n%s", prefix, body, extra={"tick_name": tick_name})
+            logger.debug("%s%s\n%s", tick_prefix, prefix, body)
         else:
-            logger.debug("%s", body, extra={"tick_name": tick_name})
+            logger.debug("%s%s", tick_prefix, body)
 
     @staticmethod
     def _log_encode(value):

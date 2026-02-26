@@ -59,7 +59,7 @@ class PriceSeries(Serializable):
 
         self.prices = {k: v for k, v in self.prices.items() if v is not None}
 
-        self.log_debug(tick_name=self.tick,  prefix="Price series debug: ")
+        self.log_debug(tick=self.tick,  prefix="Price series debug: ")
 
     @classmethod
     def from_dict(cls, d: dict) -> "PriceSeries":
@@ -183,7 +183,7 @@ class Equity(Serializable):
     parent_trade: "Trade" | None = None
 
     def __post_init__(self):
-        self.log_debug(tick_name=self.parent_trade._tick,  prefix="Equity debug: ")
+        self.log_debug(tick=self.parent_trade._tick,  prefix="Equity debug: ")
 
 
 @dataclass
@@ -194,7 +194,7 @@ class Cashflow(Serializable):
     parent_trade: "Trade" | None = None
 
     def __post_init__(self):
-        self.log_debug(tick_name=self.parent_trade._tick,  prefix="Cashflow debug: ")
+        self.log_debug(tick=self.parent_trade._tick,  prefix="Cashflow debug: ")
 
 class CarryRankingFeature(str, Enum):
     RAW_CARRY = "raw_carry"
@@ -206,7 +206,7 @@ class CarryRankingFeature(str, Enum):
 class BaseTradeFeatures(Serializable, ABC):
 
     def __post_init__(self):
-        self.log_debug(tick_name='',  prefix="Cashflow debug: ")
+        self.log_debug(tick="",  prefix="Cashflow debug: ")
 
     @classmethod
     def from_dict(cls, d: dict) -> "BaseTradeFeatures":
@@ -371,14 +371,13 @@ class BackTestResult(Serializable):
     
     def __post_init__(self):
         logging.info(
-            f"Backtest completed: "
+            f"[BACKTEST] Backtest completed: "
             f"Sharpe={self.sharpe:.3f}, "
             f"CAGR={self.cagr*100:.2f}%, "
             f"Total Return={self.total_return*100:.2f}%, "
             f"Max DD={self.max_drawdown*100:.2f}%, "
             f"Volatility={self.volatility*100:.2f}%, "
-            f"Trades={len(self.snapshots)}",
-            extra={"tick_name": "BACKTEST"}
+            f"Trades={len(self.snapshots)}"
         )
     
 

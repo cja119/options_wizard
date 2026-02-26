@@ -98,12 +98,11 @@ class Trade:
             exit_cashflow = self._close_trade()
             
             logging.warning(
-                "Entering trade exiting on same-day "
+                f"[{self._tick}] Entering trade exiting on same-day "
                 f"entry={self.entry_data.entry_date.to_iso()} | "
                 f"exit={date.to_iso()} | "
                 f"pos={self.entry_data.position_type.name} | "
-                f"size={self.entry_data.position_size}",
-                extra={"tick_name": self._tick}
+                f"size={self.entry_data.position_size}"
             )
 
             net_amount = 0.0
@@ -265,8 +264,7 @@ class Trade:
         self._closed = False
 
         logging.debug(
-            f"Entering trade on {date.to_iso()}",
-            extra={"tick_name": self._tick}
+            f"[{self._tick}] Entering trade on {date.to_iso()}"
         )
 
         return cashflow

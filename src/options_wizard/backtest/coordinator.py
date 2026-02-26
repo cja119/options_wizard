@@ -66,10 +66,9 @@ class BackTestCoordinator:
             snapshot = self._position(date)
 
             logging.debug(
-                f"Backtest snapshot on {date.to_iso()}: "
+                f"[BACKTEST] Backtest snapshot on {date.to_iso()}: "
                 f"equity={snapshot.total_equity:.2f}, "
-                f"cash={snapshot.total_cash:.2f}",
-                extra={"tick_name": "BACKTEST"}
+                f"cash={snapshot.total_cash:.2f}"
             )
 
             position = snapshot.total_equity + snapshot.total_cash

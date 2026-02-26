@@ -7,7 +7,7 @@ from dataclasses import fields, is_dataclass
 from typing import get_origin, get_args, Union, get_type_hints, Dict
 from functools import lru_cache
 import pprint
-import logging
+import structlog
 
 PRIMITIVES = (int, float, str, bool, type(None))
 
@@ -128,13 +128,13 @@ class Serializable:
         prefix: str | None = None,
         logger=None,
     ) -> None:
-        logger = logger or logging.getLogger(type(self).__module__)
+        logger = logger or structlog.get_logger(type(self).__module__)
         body = self.to_log_str()
-        tick_prefix = f"[{tick}] " if tick else ""
+        log_kwargs = {"tick": tick} if tick else {}
         if prefix:
-            logger.debug("%s%s\n%s", tick_prefix, prefix, body)
+            logger.debug(prefix, body=body, **log_kwargs)
         else:
-            logger.debug("%s%s", tick_prefix, body)
+            logger.debug("Serializable debug", body=body, **log_kwargs)
 
     @staticmethod
     def _log_encode(value):

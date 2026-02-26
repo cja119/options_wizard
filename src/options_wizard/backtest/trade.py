@@ -5,7 +5,7 @@ Trade class definitions
 from __future__ import annotations
 
 from typing import Tuple, TYPE_CHECKING
-import logging
+import structlog
 
 from options_wizard.data.trade import (
     TransactionCostModel,
@@ -22,6 +22,8 @@ SPREAD_CAPTURE = 1.0
 if TYPE_CHECKING:
     from options_wizard.data.date import DateObj
     from options_wizard.data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
+
+logger = structlog.get_logger(__name__)
 
 
 class Trade:
@@ -97,12 +99,13 @@ class Trade:
             entry_cashflow = self._initialize_trade(date)
             exit_cashflow = self._close_trade()
             
-            logging.warning(
-                f"[{self._tick}] Entering trade exiting on same-day "
-                f"entry={self.entry_data.entry_date.to_iso()} | "
-                f"exit={date.to_iso()} | "
-                f"pos={self.entry_data.position_type.name} | "
-                f"size={self.entry_data.position_size}"
+            logger.warning(
+                "Entering trade exiting on same day",
+                tick=self._tick,
+                entry_date=self.entry_data.entry_date.to_iso(),
+                exit_date=date.to_iso(),
+                position_type=self.entry_data.position_type.name,
+                position_size=self.entry_data.position_size,
             )
 
             net_amount = 0.0
@@ -263,8 +266,10 @@ class Trade:
         self._opened = True
         self._closed = False
 
-        logging.debug(
-            f"[{self._tick}] Entering trade on {date.to_iso()}"
+        logger.debug(
+            "Entering trade",
+            tick=self._tick,
+            date=date.to_iso(),
         )
 
         return cashflow

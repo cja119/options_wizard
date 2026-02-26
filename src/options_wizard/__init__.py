@@ -8,6 +8,8 @@ from .position import *
 import types
 import logging
 from pathlib import Path
+import structlog
+from structlog.stdlib import ProcessorFormatter
 
 def caller_stem(stacklevel: int = 2) -> str:
     import inspect
@@ -47,35 +49,62 @@ def set_log(level: str, log_file: str | None = None) -> None:
     log_path = Path.cwd() / "tmp" / log_file
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter("[%(asctime)s | %(levelname)s]: %(message)s")
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
 
-    handlers = [
+    renderer = structlog.processors.KeyValueRenderer(
+        key_order=["timestamp", "level", "logger", "event", "tick"],
+        drop_missing=True,
+    )
+
+    formatter = ProcessorFormatter(
+        processor=renderer,
+        foreign_pre_chain=shared_processors,
+    )
+
+    handlers: list[logging.Handler] = [
         logging.FileHandler(log_path, mode="w", encoding="utf-8"),
         logging.StreamHandler(),
     ]
-
-    logging.basicConfig(
-        level=numeric_level,
-        handlers=handlers,
-        force=True,
-    )
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(numeric_level)
-    for handler in root_logger.handlers:
+    for handler in handlers:
         handler.setFormatter(formatter)
 
-    # Apply formatter to all existing loggers (including libraries)
+    root_logger = logging.getLogger()
+    root_logger.handlers = []
+    root_logger.setLevel(numeric_level)
+    for handler in handlers:
+        root_logger.addHandler(handler)
+
+    # Allow child loggers to propagate to root handlers.
     for name in logging.root.manager.loggerDict:
-        logger = logging.getLogger(name)
-        for handler in logger.handlers:
-            handler.setFormatter(formatter)
+        existing = logging.root.manager.loggerDict[name]
+        if isinstance(existing, logging.Logger):
+            existing.handlers = []
+            existing.propagate = True
+
+    structlog.configure(
+        processors=[
+            *shared_processors,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
             
 __all__ = sorted(
     name
     for name, val in globals().items()
     if not name.startswith("_")
-    and name not in {"types", "logging", "Path"}
+    and name not in {"types", "logging", "Path", "structlog", "ProcessorFormatter"}
     and not isinstance(val, types.ModuleType)
 )
 

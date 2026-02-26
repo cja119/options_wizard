@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import os
-import logging
+import structlog
 from dotenv import load_dotenv
 
 from dataclasses import dataclass
@@ -16,6 +16,8 @@ from typing import List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .backtest.trade import DateObj
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -91,7 +93,8 @@ class Universe:
 
         for stock in self.ticks.copy():
             if stock not in available_ticks:
-                logging.warning(
-                    f"Removing {stock} from options_wizard.universe - data not available"
+                logger.warning(
+                    "Removing ticker from universe - data not available",
+                    tick=stock,
                 )
                 self.ticks.remove(stock)

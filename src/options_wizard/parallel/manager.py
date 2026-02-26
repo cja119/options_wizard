@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import logging
 from typing import Callable, Any, Tuple, List, Dict
 from functools import wraps
 from enum import Enum
 from tqdm import tqdm
+import structlog
 
 
 from .types import (
@@ -17,6 +17,7 @@ from .types import (
 )
 
 FNS_SIG = List[Tuple[Callable, Dict[str, Any]]]
+logger = structlog.get_logger(__name__)
 
 
 def wrap_fn(
@@ -94,12 +95,11 @@ class SingleTickProcessor:
 
             try:
                 self._execute_function(func, kwargs)
-            except Exception as e:
-                logging.error(
-                    "[%s] Exception in %s: %s",
-                    self._tick,
-                    func.__name__,
-                    e,
+            except Exception:
+                logger.exception(
+                    "Exception in pipeline function",
+                    tick=self._tick,
+                    function=func.__name__,
                 )
                 self._exit()
 
@@ -257,7 +257,7 @@ class Pipeline:
     def _run_pipeline(self) -> None:
         failed = 0
         for tick in self.universe.ticks:
-            logging.info("[%s] Running strategy construction.", tick)
+            logger.info("Running strategy construction", tick=tick)
             result = self._run_single(tick)
             self._rets[tick] = result
 
@@ -265,7 +265,7 @@ class Pipeline:
             if result is None:
                 failed += 1
             elif isinstance(result, tuple) and all(r is None for r in result):
-                logging.warning("[%s] Strategy backtest failed", tick)
+                logger.warning("Strategy backtest failed", tick=tick)
                 failed += 1
 
     def _run_single(

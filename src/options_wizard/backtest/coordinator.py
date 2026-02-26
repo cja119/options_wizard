@@ -8,7 +8,7 @@ from typing import Deque, Dict, TYPE_CHECKING
 from collections import deque
 from dataclasses import dataclass, field
 from abc import ABC
-import logging
+import structlog
 
 
 from numpy import log as np_log
@@ -21,6 +21,8 @@ from . import diagnostics as bt_diag
 
 if TYPE_CHECKING:
     from ..data.date import DateObj
+
+logger = structlog.get_logger(__name__)
 
 @dataclass
 class BackTestConfig(ABC):
@@ -65,10 +67,12 @@ class BackTestCoordinator:
         for date in self._dates:
             snapshot = self._position(date)
 
-            logging.debug(
-                f"[BACKTEST] Backtest snapshot on {date.to_iso()}: "
-                f"equity={snapshot.total_equity:.2f}, "
-                f"cash={snapshot.total_cash:.2f}"
+            logger.debug(
+                "Backtest snapshot",
+                tick="BACKTEST",
+                date=date.to_iso(),
+                equity=round(snapshot.total_equity, 2),
+                cash=round(snapshot.total_cash, 2),
             )
 
             position = snapshot.total_equity + snapshot.total_cash

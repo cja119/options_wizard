@@ -10,6 +10,7 @@ from pathlib import Path
 from enum import Enum
 from typing import Deque, List, override, Optional, Dict, Any
 from abc import ABC, abstractmethod
+import structlog
 
 import polars as pl
 
@@ -20,6 +21,7 @@ from options_wizard.data.contract import *
 # Save artifacts relative to the current working directory (where the script is run)
 SAVE_PATH: Path = Path.cwd() / "tmp"
 SAVE_PATH.mkdir(exist_ok=True, parents=True)
+logger = structlog.get_logger(__name__)
 
 
 class SaveType(str, Enum):
@@ -215,7 +217,11 @@ class StratType(BaseType):
                     if hasattr(item, key):
                         setattr(item, key, value)
                     else:
-                        logging.warning(f"Item {item} does not have attribute {key}")
+                        logger.warning(
+                            "Override ignored; item does not have attribute",
+                            item=str(item),
+                            attribute=key,
+                        )
         return out
 
     @staticmethod

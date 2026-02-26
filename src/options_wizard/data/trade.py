@@ -8,8 +8,8 @@ from abc import ABC
 from dataclasses import dataclass, field, fields, MISSING
 from typing import List, Dict, TYPE_CHECKING, Any, Tuple, Type
 from enum import Enum
-import logging
 import pickle
+import structlog
 
 import numpy as np
 
@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from .date import DateObj
     from options_wizard.backtest.trade import Trade
     from .contract import BaseUnderlying
+
+logger = structlog.get_logger(__name__)
 
 class PositionType(int, Enum):
     LONG = 1
@@ -370,14 +372,15 @@ class BackTestResult(Serializable):
     dates: List[DateObj]
     
     def __post_init__(self):
-        logging.info(
-            f"[BACKTEST] Backtest completed: "
-            f"Sharpe={self.sharpe:.3f}, "
-            f"CAGR={self.cagr*100:.2f}%, "
-            f"Total Return={self.total_return*100:.2f}%, "
-            f"Max DD={self.max_drawdown*100:.2f}%, "
-            f"Volatility={self.volatility*100:.2f}%, "
-            f"Trades={len(self.snapshots)}"
+        logger.info(
+            "Backtest completed",
+            tick="BACKTEST",
+            sharpe=round(self.sharpe, 3),
+            cagr_pct=round(self.cagr * 100, 2),
+            total_return_pct=round(self.total_return * 100, 2),
+            max_drawdown_pct=round(self.max_drawdown * 100, 2),
+            volatility_pct=round(self.volatility * 100, 2),
+            trades=len(self.snapshots),
         )
     
 

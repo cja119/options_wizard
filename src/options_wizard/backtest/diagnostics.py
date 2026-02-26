@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from threading import Lock
+import structlog
 
 
 _LOG_PATH = Path("tmp") / "backtest_errors.log"
@@ -10,6 +10,7 @@ _WARNING_COUNT = 0
 _BUFFER: list[str] = []
 _BUFFER_LIMIT = 200
 _LOCK = Lock()
+logger = structlog.get_logger(__name__)
 
 
 def reset(clear_log: bool = True) -> None:
@@ -59,5 +60,9 @@ def finalize() -> int:
     with _LOCK:
         _flush_locked()
         count = _WARNING_COUNT
-    logging.info(f"{count} warnings loaded into the log file")
+    logger.info(
+        "Warnings loaded into backtest diagnostics log",
+        warning_count=count,
+        log_path=str(_LOG_PATH),
+    )
     return count

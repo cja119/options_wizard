@@ -15,8 +15,8 @@ from numpy import log as np_log
 from numpy import fromiter as np_fromiter
 from numpy import sqrt as np_sqrt
 
-from data.trade import BackTestResult
-from position.base import PositionBase
+from options_wizard.data.trade import BackTestResult
+from options_wizard.position.base import PositionBase
 from . import diagnostics as bt_diag
 
 if TYPE_CHECKING:

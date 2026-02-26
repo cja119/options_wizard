@@ -1,6 +1,6 @@
 from functools import total_ordering
 from dataclasses import dataclass
-from data.base import Serializable
+from options_wizard.data.base import Serializable
 import polars as pl
 
 SECONDS_IN_DAY = 86400

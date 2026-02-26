@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Tuple, TYPE_CHECKING
 import logging
 
-from data.trade import (
+from options_wizard.data.trade import (
     TransactionCostModel,
     AccountingConvention,
     Equity,
@@ -15,13 +15,13 @@ from data.trade import (
     PositionType,
 )
 
-from data.date import DateObj
+from options_wizard.data.date import DateObj
 
 SPREAD_CAPTURE = 1.0
 
 if TYPE_CHECKING:
-    from data.date import DateObj
-    from data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
+    from options_wizard.data.date import DateObj
+    from options_wizard.data.trade import EntryData, BaseUnderlying, BaseTradeFeatures
 
 
 class Trade:

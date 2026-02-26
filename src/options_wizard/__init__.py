@@ -1,10 +1,10 @@
-from parallel import *
-from model import *
-from data import *
-from backtest import *
-from universe import *
-from position import *
-from examples import *
+from .parallel import *
+from .model import *
+from .data import *
+from .backtest import *
+from .universe import *
+from .position import *
+from .examples import *
 import types
 import logging
 from pathlib import Path

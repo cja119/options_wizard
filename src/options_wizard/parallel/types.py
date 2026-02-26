@@ -13,9 +13,9 @@ from abc import ABC, abstractmethod
 
 import polars as pl
 
-from data.trade import *
-from data.date import *
-from data.contract import *
+from options_wizard.data.trade import *
+from options_wizard.data.date import *
+from options_wizard.data.contract import *
 
 # Save artifacts relative to the current working directory (where the script is run)
 SAVE_PATH: Path = Path.cwd() / "tmp"

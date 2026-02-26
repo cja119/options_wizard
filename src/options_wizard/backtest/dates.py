@@ -4,7 +4,7 @@ Date range utility, based on the em module
 
 from enum import Enum
 import pandas as pd
-from data.date import DateObj
+from options_wizard.data.date import DateObj
 from datetime import date
 import exchange_calendars as ec
 

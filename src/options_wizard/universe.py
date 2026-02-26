@@ -92,6 +92,6 @@ class Universe:
         for stock in self.ticks.copy():
             if stock not in available_ticks:
                 logging.warning(
-                    f"Removing {stock} from universe - data not available"
+                    f"Removing {stock} from options_wizard.universe - data not available"
                 )
                 self.ticks.remove(stock)

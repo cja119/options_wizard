@@ -7,6 +7,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["options_wizard*"]
 
 [project]
 name = "OptionsWizard"

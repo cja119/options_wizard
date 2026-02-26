@@ -7,12 +7,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Dict, TYPE_CHECKING, Tuple, Set, Iterable
 
-from data.trade import Cashflow, Snapshot
-from backtest.trade import Trade
+from options_wizard.data.trade import Cashflow, Snapshot
+from options_wizard.backtest.trade import Trade
 
 if TYPE_CHECKING:
-    from data.date import DateObj
-    from backtest import Trade, BackTestConfig
+    from options_wizard.data.date import DateObj
+    from options_wizard.backtest import Trade, BackTestConfig
 
 
 

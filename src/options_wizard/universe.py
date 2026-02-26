@@ -44,5 +44,5 @@ class UniverseBase(ABC):
         return None
 
     @abstractmethod
-    def check_ticks(self):
+    def check_ticks(self, **kwargs):
         return None

@@ -74,6 +74,11 @@ def set_log(level: str, log_file: str | None = None) -> None:
         handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        try:
+            handler.close()
+        except Exception:
+            pass
     root_logger.handlers = []
     root_logger.setLevel(numeric_level)
     for handler in handlers:
@@ -83,6 +88,11 @@ def set_log(level: str, log_file: str | None = None) -> None:
     for name in logging.root.manager.loggerDict:
         existing = logging.root.manager.loggerDict[name]
         if isinstance(existing, logging.Logger):
+            for handler in existing.handlers:
+                try:
+                    handler.close()
+                except Exception:
+                    pass
             existing.handlers = []
             existing.propagate = True
 

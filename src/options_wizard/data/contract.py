@@ -42,7 +42,11 @@ class UnderlyingType(str, Enum):
 
 @dataclass
 class Spot(BaseUnderlying):
+    # --- Required Fields --- #
     underlying_type: UnderlyingType = UnderlyingType.SPOT
+
+    # --- Optional Fields --- #
+    other: Optional[dict] = field(default=None)
     pass
 
 

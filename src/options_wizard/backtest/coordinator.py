@@ -67,7 +67,7 @@ class BackTestCoordinator:
         for date in self._dates:
             snapshot = self._position(date)
 
-            logger.debug(
+            logger.info(
                 "Backtest snapshot",
                 tick="BACKTEST",
                 date=date.to_iso(),

@@ -47,7 +47,7 @@ def wrap_fn(
         @wraps(function)
         def wrapper(*args, **fkwargs):
             result = function(*args, **fkwargs)
-            if result.isempty():
+            if result is None or result.isempty():
                 return None
             return result
 

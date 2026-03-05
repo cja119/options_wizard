@@ -7,7 +7,9 @@ import pandas as pd
 from options_wizard.data.date import DateObj
 from datetime import date
 import exchange_calendars as ec
+import structlog
 
+logger = structlog.get_logger(__name__)
 
 class Exchange(str, Enum):
     NYSE = "nyse"

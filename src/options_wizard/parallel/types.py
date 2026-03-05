@@ -173,8 +173,7 @@ class StratType(BaseType):
     @classmethod
     def load(
         cls, tick: str, save_type: SaveType = SaveType.PARQUET, suffix: str = "",
-        wrapper: Optional[Callable] = None, overrides: Optional[Dict[str, Any]]= None
-    ) -> StratType:
+        wrapper: Optional[Callable] = None) -> StratType:
         if save_type == SaveType.PARQUET:
             path = SAVE_PATH / f"{cls._name}_{tick}_{suffix}.parquet"
             if not path.exists():
@@ -200,28 +199,16 @@ class StratType(BaseType):
             cls =  dill.load(open(SAVE_PATH / f"{cls._name}_{tick}_{suffix}.pkl", "rb"))
 
         if wrapper is not None:
-            cls._data = cls.reconstruct(wrapper, overrides)
+            cls._data = cls.reconstruct(wrapper)
 
         return cls
         
-    def reconstruct(self, wrapper=None, overrides: Optional[Dict[str, Any]]=None):
+    def reconstruct(self, wrapper=None):
         if self._data is None:
             return []
         out = [self.dc_type.from_dict(obj) for obj in self._data]
         if wrapper:
             out = [wrapper(x) for x in out]
-
-        if overrides:
-            for item in out:
-                for key, value in overrides.items():
-                    if hasattr(item, key):
-                        setattr(item, key, value)
-                    else:
-                        logger.warning(
-                            "Override ignored; item does not have attribute",
-                            item=str(item),
-                            attribute=key,
-                        )
         return out
 
     @staticmethod

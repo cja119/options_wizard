@@ -111,14 +111,16 @@ def market_dates(
         sessions = cal.sessions_in_range(start, end)
     except:
         logger.error("Calendar start / end date out of range")
+        cal_start = cal.default_start() + pd.offsets.BusinessDay(n=1)
+        cal_end = cal.default_end() - pd.offsets.BusinessDay(n=1)
         try:
-            sessions = cal.sessions_in_range(cal.default_start(), end)
+            sessions = cal.sessions_in_range(cal_start, end)
         except:
             logger.error("Calendar end date out of range")
             try:
-                sessions = cal.sessions_in_range(start, cal.default_end())
+                sessions = cal.sessions_in_range(start, cal_end)
             except:
-                sessions =  cal.sessions_in_range(cal.default_start(), cal.default_end())
+                sessions =  cal.sessions_in_range(cal_start, cal_end)
                 ogger.error("Both calendar start and end date out of range")
     
     if isinstance(lower, DateObj) and isinstance(upper, DateObj):

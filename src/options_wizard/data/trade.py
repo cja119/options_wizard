@@ -37,6 +37,7 @@ class AccountingConvention(str, Enum):
 class TransactionCostModel(str, Enum):
     NONE = "none"
     SPREAD = "spread"
+    BPS = "bps"
 
 
 @dataclass

@@ -107,17 +107,17 @@ def market_dates(
     )
     try:
         sessions = cal.sessions_in_range(start, end)
+    except:
+        logger.error("Calendar start / end date out of range")
+        try:
+            sessions = cal.sessions_in_range(cal.default_start(), end)
         except:
-            logger.error("Calendar start / end date out of range")
+            logger.error("Calendar end date out of range")
             try:
-                sessions = cal.sessions_in_range(cal.default_start(), end)
+                sessions = cal.sessions_in_range(start, cal.default_end())
             except:
-                logger.error("Calendar end date out of range")
-                try:
-                    sessions = cal.sessions_in_range(start, cal.default_end())
-                except:
-                    sessions =  cal.sessions_in_range(cal.default_start(), cal.default_end())
-                    ogger.error("Both calendar start and end date out of range")
+                sessions =  cal.sessions_in_range(cal.default_start(), cal.default_end())
+                ogger.error("Both calendar start and end date out of range")
     
     if isinstance(lower, DateObj) and isinstance(upper, DateObj):
         return [DateObj(year=ts.year, month=ts.month, day=ts.day) for ts in sessions]

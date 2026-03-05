@@ -69,8 +69,8 @@ class BackTestCoordinator:
 
             logger.info(
                 "Backtest snapshot",
-                tick="BACKTEST",
                 date=date.to_iso(),
+                nav=round(snapshot.total_equity + snapshot.total_cash, 2),
                 equity=round(snapshot.total_equity, 2),
                 cash=round(snapshot.total_cash, 2),
             )

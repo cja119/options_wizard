@@ -255,11 +255,11 @@ class BackTestResult(Serializable):
         logger.info(
             "Backtest completed",
             tick="BACKTEST",
-            sharpe=round(self.sharpe, 3),
-            cagr_pct=round(self.cagr * 100, 2),
-            total_return_pct=round(self.total_return * 100, 2),
-            max_drawdown_pct=round(self.max_drawdown * 100, 2),
-            volatility_pct=round(self.volatility * 100, 2),
+            sharpe=float(round(self.sharpe, 3)),
+            cagr_pct=f"{self.cagr * 100:,.2f}%",
+            total_return_pct=f"{self.total_return * 100:,.2f}%",
+            max_drawdown_pct=f"{self.max_drawdown * 100:,.2f}%",
+            volatility_pct=f"{self.volatility * 100:,.2f}%",
             trades=len(self.snapshots),
         )
     

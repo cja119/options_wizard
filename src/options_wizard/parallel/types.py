@@ -206,7 +206,10 @@ class StratType(BaseType):
     def reconstruct(self, wrapper=None):
         if self._data is None:
             return []
-        out = [self.dc_type.from_dict(obj) for obj in self._data]
+        out = []
+        for obj in self._data:
+            entry = obj if isinstance(obj, self.dc_type) else self.dc_type.from_dict(obj)
+            out.append(entry)
         if wrapper:
             out = [wrapper(x) for x in out]
         return out

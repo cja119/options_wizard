@@ -15,9 +15,6 @@ from .trade import (
     TransactionCostModel,
     AccountingConvention,
     PriceSeries,
-    BaseTradeFeatures,
-    SpreadFeatures,
-    CarryRankingFeature,
     BackTestResult
 )
 
@@ -36,6 +33,5 @@ __all__ = [
     "TransactionCostModel",
     "AccountingConvention",
     "PriceSeries",
-    "BaseTradeFeatures",
     "BackTestResult"
 ]

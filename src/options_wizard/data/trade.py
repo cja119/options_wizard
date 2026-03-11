@@ -13,7 +13,7 @@ import structlog
 
 import numpy as np
 
-from options_wizard.data.date import DateObj, Serializable
+from options_wizard.data.date import DateObj
 from options_wizard.data.contract import BaseUnderlying
 from .base import Serializable
 
@@ -205,123 +205,6 @@ class CarryRankingFeature(str, Enum):
     RAW_RELATIVE_CARRY = "raw_relative_carry"
     SMOOTHED_RELATIVE_CARRY = "smoothed_relative_carry"
 
-@dataclass
-class BaseTradeFeatures(Serializable, ABC):
-
-    def __post_init__(self):
-        self.log_debug(tick="",  prefix="Cashflow debug: ")
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "BaseTradeFeatures":
-        if cls is BaseTradeFeatures:
-            return cls._deserialize(d)
-        return super().from_dict(d)
-
-    @classmethod
-    def from_serialized_dict(cls, d: dict) -> "BaseTradeFeatures":
-        return cls._deserialize(d)
-
-    @staticmethod
-    def _deserialize(d: dict) -> "BaseTradeFeatures":
-        if isinstance(d, BaseTradeFeatures):
-            return d
-        inferred = infer_trade_features_type(d)
-        if inferred is BaseTradeFeatures:
-            return Serializable.from_dict.__func__(BaseTradeFeatures, d)
-        return inferred.from_dict(d)
-
-
-@dataclass
-class SpreadFeatures(BaseTradeFeatures):
-    other_contracts: Tuple[str]
-    raw_carry: float
-    smoothed_carry: float
-    raw_relative_carry: float
-    smoothed_relative_carry: float
-    notional_exposure: float
-    volatility: float
-
-
-def _normalize_feature_tag_value(tag: Any) -> Any:
-    if isinstance(tag, (bytes, bytearray)):
-        try:
-            tag = pickle.loads(tag)
-        except Exception:
-            tag = None
-    if isinstance(tag, Enum):
-        tag = tag.value
-    return tag
-
-
-def _normalize_feature_tag_text(value: str) -> str:
-    return "".join(ch for ch in value.lower() if ch.isalnum())
-
-
-def _iter_feature_subclasses(base_cls: Type["BaseTradeFeatures"]):
-    for sub in base_cls.__subclasses__():
-        yield sub
-        yield from _iter_feature_subclasses(sub)
-
-
-def infer_trade_features_type(d: dict) -> Type["BaseTradeFeatures"]:
-    if not isinstance(d, dict):
-        return BaseTradeFeatures
-
-    tag = d.get("features_type") or d.get("feature_type") or d.get("type")
-    tag = _normalize_feature_tag_value(tag)
-
-    if isinstance(tag, type) and issubclass(tag, BaseTradeFeatures):
-        return tag
-
-    if isinstance(tag, str):
-        tag_norm = _normalize_feature_tag_text(tag)
-        for sub in _iter_feature_subclasses(BaseTradeFeatures):
-            name_norm = _normalize_feature_tag_text(sub.__name__)
-            if tag_norm == name_norm:
-                return sub
-            if name_norm.endswith("features") and tag_norm == name_norm[: -len("features")]:
-                return sub
-            alias = getattr(sub, "FEATURES_TAG", None)
-            if isinstance(alias, str) and tag_norm == _normalize_feature_tag_text(alias):
-                return sub
-            aliases = getattr(sub, "FEATURES_TAGS", None)
-            if isinstance(aliases, (list, tuple, set)):
-                if any(
-                    tag_norm == _normalize_feature_tag_text(str(a)) for a in aliases
-                ):
-                    return sub
-
-    keys = set(d.keys())
-    base_fields = {f.name for f in fields(BaseTradeFeatures)}
-    best = None
-    best_required = -1
-    best_overlap = -1
-
-    for sub in _iter_feature_subclasses(BaseTradeFeatures):
-        sub_fields = [f for f in fields(sub) if f.name not in base_fields]
-        if not sub_fields:
-            continue
-        required = {
-            f.name
-            for f in sub_fields
-            if f.default is MISSING and f.default_factory is MISSING
-        }
-        all_names = {f.name for f in sub_fields}
-        overlap = len(all_names & keys)
-        if required and not required <= keys:
-            continue
-        if required:
-            if (len(required), overlap) > (best_required, best_overlap):
-                best = sub
-                best_required, best_overlap = len(required), overlap
-        else:
-            if overlap > best_overlap:
-                best = sub
-                best_required, best_overlap = 0, overlap
-
-    if best is not None and best_overlap > 0:
-        return best
-    return BaseTradeFeatures
 
 @dataclass
 class EntryData(Serializable):
@@ -331,7 +214,7 @@ class EntryData(Serializable):
     exit_date: DateObj
     tick: str
     position_size: float = 1.0
-    features: BaseTradeFeatures | None = None
+    features: None = None
     features_key: str | int | None = None
 
     @classmethod
@@ -345,9 +228,7 @@ class EntryData(Serializable):
             exit_date=DateObj.from_iso(xd) if isinstance(xd, str) else xd,
             tick=d["tick"],
             position_size=d.get("position_size", 1.0),
-            features=(
-                None if d.get("features") is None else BaseTradeFeatures.from_dict(d["features"])
-            ),  # or decode if needed
+            features=d["features"],
             features_key=d.get("features_key"),
         )
     

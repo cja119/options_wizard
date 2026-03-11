@@ -123,7 +123,7 @@ class BackTestCoordinator:
         for snapshot in self._snapshots:
             update_equity = {}
             for trade, equity in snapshot.trade_equities.items():
-                equity.underlying_trade = None
+                equity.parent_trade = None
                 update_equity[trade] = equity
 
     @staticmethod

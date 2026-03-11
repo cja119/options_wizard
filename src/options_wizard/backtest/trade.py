@@ -8,7 +8,6 @@ from typing import Tuple, TYPE_CHECKING
 import structlog
 
 from options_wizard.data.trade import (
-    TransactionCostModel,
     AccountingConvention,
     Equity,
     Cashflow,
@@ -16,8 +15,6 @@ from options_wizard.data.trade import (
 )
 
 from options_wizard.data.date import DateObj
-
-SPREAD_CAPTURE = 1.0
 
 if TYPE_CHECKING:
     from options_wizard.data.date import DateObj
@@ -46,7 +43,7 @@ class Trade:
     # ---- External Interface ---- #
     @property
     def entry_cost(self) -> float:
-        date = self.entry_data.entry_date.to_iso()
+        date = self.entry_data.entry_date
         return self._model.open_trade(date)
 
     def __call__(self, date: DateObj ) -> Tuple[Equity | None, Cashflow | None]:
@@ -107,7 +104,7 @@ class Trade:
             cashflow = Cashflow(
                 date=date,
                 amount=net_amount,
-                accounting_convention=self.accounting_type,
+                accounting_convention=self._model.ACCOUNTING_TYPE,
                 parent_trade=self,
             )
             return None, cashflow
@@ -124,18 +121,6 @@ class Trade:
         return delta + 1
 
     # ---- Internal Methods ---- #
-
-    def _mid_price(self, price: BaseUnderlying) -> float:
-        return (price.bid + price.ask) / 2
-
-    def _half_spread_adj(self, price: BaseUnderlying, is_buy: bool) -> float:
-        if self.transaction_cost_model != TransactionCostModel.SPREAD:
-            return 0.0
-        half_spread = (price.ask - price.bid) / 2 * (1 - self._spread_capture)
-        return half_spread if is_buy else -half_spread
-
-    def _execution_price(self, price: BaseUnderlying, is_buy: bool) -> float:
-        return self._mid_price(price) + self._half_spread_adj(price, is_buy)
 
     @property
     def _pos_sign(self) -> int:

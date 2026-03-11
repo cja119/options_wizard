@@ -74,7 +74,7 @@ class BackTestCoordinator:
                 nav=f"${nav:,.2f}",
                 equity=f"${equity:,.2f}",
                 cash=f"${snapshot.total_cash:,.2f}",
-                effective_leverage=leverage,
+                leverage=leverage,
                 open_trades=open_trades,
             )
 

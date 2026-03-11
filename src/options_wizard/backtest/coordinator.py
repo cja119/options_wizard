@@ -63,15 +63,22 @@ class BackTestCoordinator:
         for date in self._dates:
             snapshot = self._position(date)
 
+            nav = snapshot.total_equity + snapshot.total_cash
+            equity = snapshot.total_equity
+            leverage = round(nav / equity, 2) if equity != 0.0 else 0.0
+            open_trades = len(snapshot.trade_equities)
+
             logger.info(
                 "Backtest snapshot",
                 date=date.to_iso(),
-                nav=round(snapshot.total_equity + snapshot.total_cash, 2),
-                equity=round(snapshot.total_equity, 2),
-                cash=round(snapshot.total_cash, 2),
+                nav=f"${nav:,.2f}",
+                equity=f"${equity:,.2f}",
+                cash=f"${snapshot.total_cash:,.2f}",
+                effective_leverage=leverage,
+                open_trades=open_trades,
             )
 
-            position = snapshot.total_equity + snapshot.total_cash
+            position = nav
             self._snapshots.append(snapshot)
 
             if position > max_equity:

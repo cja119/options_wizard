@@ -65,7 +65,7 @@ class BackTestCoordinator:
 
             nav = snapshot.total_equity + snapshot.total_cash
             equity = snapshot.total_equity
-            leverage = round(nav / equity, 2) if equity != 0.0 else 0.0
+            leverage = float(round(equity / nav, 2)) if nav != 0.0 else 0.0
             open_trades = len(snapshot.trade_equities)
 
             logger.info(

@@ -214,8 +214,7 @@ class EntryData(Serializable):
     exit_date: DateObj
     tick: str
     position_size: float = 1.0
-    features: None = None
-    features_key: str | int | None = None
+    features: None | dict = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "EntryData":
@@ -229,7 +228,6 @@ class EntryData(Serializable):
             tick=d["tick"],
             position_size=d.get("position_size", 1.0),
             features=d["features"],
-            features_key=d.get("features_key"),
         )
     
 

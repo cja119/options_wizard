@@ -52,10 +52,6 @@ class BackTestCoordinator:
         bt_diag.finalize()
         return result
 
-    def compress(self, result: BackTestResult) -> None:
-
-        pass
-
     # --- Internal Methods --- #
 
     def _run_backtest(self) -> None:

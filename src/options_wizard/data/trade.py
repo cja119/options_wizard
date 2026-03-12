@@ -252,16 +252,53 @@ class BackTestResult(Serializable):
     dates: List[DateObj]
     
     def __post_init__(self):
-        logger.info(
-            "Backtest completed",
+        unique_trades = len({trade for snapshot in self.snapshots for trade in snapshot.trade_equities})
+        nasdaq_corr = self._nasdaq_correlation()
+        log_kwargs = dict(
             tick="BACKTEST",
             sharpe=float(round(self.sharpe, 3)),
-            cagr_pct=f"{self.cagr * 100:,.2f}%",
-            total_return_pct=f"{self.total_return * 100:,.2f}%",
-            max_drawdown_pct=f"{self.max_drawdown * 100:,.2f}%",
-            volatility_pct=f"{self.volatility * 100:,.2f}%",
-            trades=len(self.snapshots),
+            cagr=f"{self.cagr * 100:,.2f}%",
+            total_return=f"{self.total_return * 100:,.2f}%",
+            max_drawdown=f"{self.max_drawdown * 100:,.2f}%",
+            volatility=f"{self.volatility * 100:,.2f}%",
+            trades=unique_trades,
         )
+        if nasdaq_corr is not None:
+            log_kwargs["nasdaq_corr"] = nasdaq_corr
+        logger.info("Backtest completed", **log_kwargs)
+
+    def _nasdaq_correlation(self) -> float | None:
+        if not self.dates or not self.returns:
+            return None
+        try:
+            import yfinance as yf
+            import pandas as pd
+            from datetime import timedelta
+
+            start = self.dates[0].to_datetime()
+            end = self.dates[-1].to_datetime()
+            hist = yf.Ticker("^IXIC").history(
+                start=start - timedelta(days=7), end=end + timedelta(days=1)
+            )
+            if hist.empty:
+                return None
+
+            hist.index = pd.to_datetime(hist.index).normalize()
+            nasdaq_returns = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
+
+            strategy_by_date = {d.to_iso(): r for d, r in zip(self.dates, self.returns)}
+            aligned_strategy, aligned_nasdaq = [], []
+            for ts, nr in nasdaq_returns.items():
+                date_str = ts.strftime("%Y-%m-%d")
+                if date_str in strategy_by_date:
+                    aligned_strategy.append(strategy_by_date[date_str])
+                    aligned_nasdaq.append(nr)
+
+            if len(aligned_strategy) < 2:
+                return None
+            return float(round(np.corrcoef(aligned_strategy, aligned_nasdaq)[0, 1], 3))
+        except Exception:
+            return None
     
 
 def _decode_underlying(u, tick):

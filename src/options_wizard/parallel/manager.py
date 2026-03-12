@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Any, Tuple, List, Dict
 from functools import wraps
 from enum import Enum
@@ -221,7 +224,6 @@ class Pipeline:
     # --- Run the strategy pipeline ---
     def run(self, n_conc=1) -> None:
         
-        import os
         if n_conc == -1:
             n_conc = os.cpu_count()
 
@@ -265,9 +267,6 @@ class Pipeline:
     # --- Internal Methods --- #
 
     def _run_parallel_pipeline(self, n_workers: int) -> None:
-
-        import os
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         cpu = os.cpu_count() or 1
 

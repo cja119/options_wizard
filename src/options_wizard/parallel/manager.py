@@ -219,8 +219,18 @@ class Pipeline:
         )
 
     # --- Run the strategy pipeline ---
-    def run(self) -> None:
-        self._run_pipeline()
+    def run(self, n_conc=1) -> None:
+        
+        import os
+        if n_conc == -1:
+            n_conc = os.cpu_count()
+
+        logger.info(f"Executing the pipeline with {n_conc} concurrent workers.")
+        
+        if n_conc == 1:    
+            self._run_serial_pipeline()
+        else:
+            self._run_parallel_pipeline(n_conc)
 
     def __call__(self, function: Callable, **kwargs: Dict[str, Any]) -> None:
         self._signature_check(function)
@@ -254,7 +264,62 @@ class Pipeline:
 
     # --- Internal Methods --- #
 
-    def _run_pipeline(self) -> None:
+    def _run_parallel_pipeline(self, n_workers: int) -> None:
+
+        import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        cpu = os.cpu_count() or 1
+
+        # Limit Polars threads to avoid oversubscription
+        polars_threads = max(1, cpu // n_workers)
+        os.environ["POLARS_MAX_THREADS"] = str(polars_threads)
+
+        logger.info(
+            "Starting parallel pipeline",
+            workers=n_workers,
+            polars_threads=polars_threads,
+            cpu_cores=cpu,
+        )
+
+        failed = 0
+        futures = {}
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            for tick in self.universe.ticks:
+                futures[executor.submit(self._run_single, tick)] = tick
+
+            for future in as_completed(futures):
+                tick = futures[future]
+
+                try:
+                    result = future.result()
+                    self._rets[tick] = result
+
+                    if result is None:
+                        failed += 1
+
+                    elif isinstance(result, tuple) and all(r is None for r in result):
+                        logger.warning("Strategy backtest failed", tick=tick)
+                        failed += 1
+
+                except Exception as e:
+                    logger.exception(
+                        "Strategy execution crashed",
+                        tick=tick,
+                        error=str(e),
+                    )
+                    self._rets[tick] = None
+                    failed += 1
+
+        logger.info(
+            "Parallel pipeline finished",
+            total=len(self.universe.ticks),
+            failed=failed,
+            succeeded=len(self.universe.ticks) - failed,
+        )
+    
+    def _run_serial_pipeline(self) -> None:
         failed = 0
         for tick in self.universe.ticks:
             logger.info("Running strategy construction", tick=tick)
